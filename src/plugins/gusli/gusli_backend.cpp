@@ -21,12 +21,12 @@
 nixlGusliEngine::nixlGusliEngine(const nixlBackendInitParams* np) : nixlBackendEngine(np) {
 	lib = &gusli::global_clnt_context::get();
 	gusli::global_clnt_context::init_params gp;
-	p.client_name = UNITEST_CLNT_NAME;
 	if (np && np->customParams) {
-		// Todo: override all other gp fields with external params
-		if (np->customParams->count("client_name") > 0) {
-			p.client_name = np->customParams->at("client_name").c_str();
-		}
+		const nixl_b_params_t* gp = np->customParams;
+		if (gp->count("client_name") > 0)
+			p.client_name = gp->at("client_name").c_str();
+		if (gp->count("client_name") > 0)
+			p.max_num_simultanous_requests = std::stoi(gp->at("max_num_simultanous_requests"));
 	}
 	const int rv = lib->init(p);
 	this->initErr = (rv != 0);

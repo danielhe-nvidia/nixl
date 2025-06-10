@@ -13,12 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-nixl_hf3fs_app = executable('nixl_hf3fs_test', 'nixl_hf3fs_test.cpp',
-                          dependencies: [nixl_dep, nixl_infra],
+# Get Abseil dependencies
+absl_log_dep = dependency('absl_log', required: true)
+
+nixl_gusli_app = executable('nixl_gusli_test', 'nixl_gusli_test.cpp',
+                          dependencies: [nixl_dep, nixl_infra, absl_log_dep],
                           include_directories: [nixl_inc_dirs, utils_inc_dirs],
                           install: true)
 
-nixl_hf3fs_mt_app = executable('nixl_hf3fs_mt_test', 'nixl_hf3fs_mt_test.cpp',
-                          dependencies: [nixl_dep, nixl_infra],
-                          include_directories: [nixl_inc_dirs, utils_inc_dirs],
-                          install: true)
+# Register the test with the test suite
+test('gusli_plugin_test', nixl_gusli_app)

@@ -36,7 +36,7 @@
 class gtest {		// Gusli tester class
 	static constexpr const int default_num_transfers = 1024;
 	static constexpr const size_t default_transfer_size = 1 * 512 * 1024; // 512KB
-	static constexpr const size_t  = (1 << 10), mb_size = (1 << 20), gb_size = (1 << 30);
+	static constexpr const size_t gb_size = (1 << 30);
 	static constexpr const int line_width = 60;
 	static constexpr const std::string line_str(line_width, '=');
 	static constexpr const char* agent_name = "GUSLITester";
@@ -47,7 +47,6 @@ class gtest {		// Gusli tester class
 	long page_size;
 	void* ptr;					// RAM buffer for ios
 
-	static constexpr double us_to_s(double us) { return us / 1000000.0; }
 	static std::string center_str(const std::string& str) { return std::string((line_width - str.length()) / 2, ' ') + str; }
 
 	bool test_pattern_do(void* buffer, size_t size, const char* action) {
@@ -107,8 +106,8 @@ class gtest {		// Gusli tester class
 	void print_segment_title(const std::string& title) {
 		std::cout << std::endl << line_str << std::endl << center_str(title) << std::endl << line_str << std::endl;
 	}
- public:
 
+ public:
 	gtest(int _num_transfers, size_t _transfer_size) : num_transfers(_num_transfers), transfer_size(_transfer_size), page_size(-1), ptr(nullptr) {
 		page_size = sysconf(_SC_PAGESIZE);
 		if (page_size <= 0) {
@@ -126,7 +125,6 @@ class gtest {		// Gusli tester class
 	}
 
 	int run_write_read_verify(void) {
-		// Initialize NIXL components first
 		nixlAgent agent(agent_name, nixlAgentConfig(true));
 
 		// Set up backend parameters for gusli::global_clnt_context::init_params
@@ -139,12 +137,12 @@ class gtest {		// Gusli tester class
 		params["max_num_simultaneous_requests"] = std::to_string(num_transfers);
 
 		// Print test configuration information
+		const size_t n_total_mapped_bytes = num_transfers * transfer_size;
 		print_segment_title("NIXL STORAGE TEST STARTING (GUSLI PLUGIN)");
 		std::cout << absl::StrFormat("Configuration:\n");
-		std::cout << absl::StrFormat("- Number of transfers: %d\n", num_transfers);
-		std::cout << absl::StrFormat("- Transfer size: %zu[B]\n", transfer_size);
-		std::cout << absl::StrFormat("- Total data: %.2f[GB]\n", (float(transfer_size) * num_transfers) / gb_size);
-		std::cout << absl::StrFormat("- Directory: %s\n", abs_path);
+		std::cout << absl::StrFormat("- Number of transfers=%d\n", num_transfers);
+		std::cout << absl::StrFormat("- Transfer=%zu[B]\n", transfer_size);
+		std::cout << absl::StrFormat("- Total data: %.2f[GB]\n", float(n_total_mapped_bytes) / gb_size);
 		std::cout << absl::StrFormat("- Backend: %s\n", "GUSLI");
 		std::cout << absl::StrFormat("- Direct I/O: %s\n", "enabled");
 		std::cout << std::endl << line_str << std::endl;
@@ -163,148 +161,123 @@ class gtest {		// Gusli tester class
 		//const nixl_status_t status = agent.makeConnection(const std::string &remote_agent, const nixl_opt_args_t* extra_params); GUSLITODO
 		int bdev_descriptor = 555555; GUSLITODO
 
-		// Control variables
-		nixlTime::us_t total_time(0);
-		double total_data_gb(0);
+		print_segment_title(phase_title("Allocating and initializing buffers"));
+		nixl_xfer_dlist_t bdev_io_src(DRAM_SEG), bdev_io_dst(BLK_SEG);
+		if (posix_memalign(&ptr, page_size, n_total_mapped_bytes) != 0) {
+			std::cerr << "DRAM allocation failed" << std::endl;
+			return 1;
+		}
+		test_pattern_do(ptr, n_total_mapped_bytes, "fill");
+		for (int i = 0; i < num_transfers; ++i) {
+			nixlBlobDesc d;
+			d.len = transfer_size;
+			d.addr = (uintptr_t)((u_int64_t)ptr + (i*transfer_size));	// Offset in RAM buffer
+			d.devId = 0;
+			bdev_io_src.addDesc(d);
 
-		try {
-			print_segment_title(phase_title("Allocating and initializing buffers"));
-			nixl_xfer_dlist_t bdev_io_src(DRAM_SEG), bdev_io_dst(BLK_SEG);
-			const size_t n_total_mapped_bytes = num_transfers * transfer_size;
-			if (posix_memalign(&ptr, page_size, n_total_mapped_bytes) != 0) {
-				std::cerr << "DRAM allocation failed" << std::endl;
-				return 1;
-			}
-			test_pattern_do(ptr, n_total_mapped_bytes, "fill");
-			for (int i = 0; i < num_transfers; ++i) {
-				nixlBlobDesc d;
-				d.len = transfer_size;
-				d.addr = (uintptr_t)((u_int64_t)ptr + (i*transfer_size));	// Offset in RAM buffer
-				d.devId = 0;
-				bdev_io_src.addDesc(d);
-
-				d.addr = (1<<20) + (i*transfer_size);	// Offset of 1[MB] block-device + RAM buffer offset
-				d.devId = bdev_descriptor;
-				bdev_io_dst.addDesc(d);
-				printProgress(float(i + 1) / num_transfers);
-			}
-
-			print_segment_title(phase_title("Registering memory with NIXL"));
-			nixl_reg_dlist_t dram_reg(DRAM_SEG), bdev_reg(BLK_SEG);
-			{	// Register the large buffer as 2 halfs, just for testing > 1 buf
-				nixlBlobDesc d;
-				d.len = n_total_mapped_bytes/2;
-				d.devId = 0;
-				for (int i = 0; i < 2; i++ )
-					d.addr = (uintptr_t)((u_int64_t)ptr + i*d.len); dram_reg.addDesc(d);
-
-				d.len = n_total_mapped_bytes/4;	// GUSLITODO Why is it needed?
-				d.devId = bdev_descriptor;
-				for (int i = 0; i < 4; i++ )
-					d.addr = (1UL << 20) + i*d.len; bdev_reg.addDesc(d);
-
-				enum nixl_status_t rv;
-				rv = agent.registerMem(dram_reg);
-				if (rv != NIXL_SUCCESS) {
-					std::cerr << "Failed reg:" << nixlEnumStrings::memTypeStr(dramg_reg.getType()) << ", rv=" << nixlEnumStrings::statusStr(rv) << std::endl;
-					return 1;
-				}
-				printProgress(0.5f);
-				rv = agent.registerMem(bdev_reg);
-				if (rv != NIXL_SUCCESS) {
-					std::cerr << "Failed reg:" << nixlEnumStrings::memTypeStr(bdev_reg.getType()) << ", rv=" << nixlEnumStrings::statusStr(rv) << std::endl;
-					return 1;
-				}
-				printProgress(1.0f);
-			}
-
-			enum nixl_xfer_op_t io_phases = {NIXL_WRITE, NIXL_READ};	// First write - then read
-			for (int i = 0; i < 2; i++ ) {
-				const std::string io_t_str = nixlEnumStrings::xferOpStr(io_phases[i]);
-				print_segment_title(phase_title(io_t_str + " Test"));
-				nixlXferReqH* treq = nullptr;
-				nixl_status_t status = agent.createXferReq(io_phases[i], bdev_io_src, bdev_io_dst, agent_name, treq);
-				if (status != NIXL_SUCCESS) {
-					std::cerr << "Failed to create transfer request - status: " << nixlEnumStrings::statusStr(status) << std::endl;
-					return 1;
-				}
-				const nixlTime::us_t time_start = nixlTime::getUs();
-				status = agent.postXferReq(treq);
-				if (status < 0) {
-					std::cerr << "Failed to post transfer request - status: " << nixlEnumStrings::statusStr(status) << std::endl;
-					agent.releaseXferReq(treq);
-					return 1;
-				}
-				do { // Wait for transfer to complete
-					status = agent.getXferStatus(treq);
-					if (status < 0) {
-						std::cerr << "Error during transfer - status: " << nixlEnumStrings::statusStr(status) << std::endl;
-						agent.releaseXferReq(treq);
-						return 1;
-					}
-				} while (status == NIXL_IN_PROG);
-
-				const nixlTime::us_t time_end = nixlTime::getUs();
-				const nixlTime::us_t time_duration = time_end - time_start;
-				const double data_gb = (float(transfer_size) * num_transfers) / (gb_size);
-				const double seconds = us_to_s(time_duration);
-				const double gbps = data_gb / seconds;
-				std::cout << io_t_str << ": completed with status: " << nixlEnumStrings::statusStr(status) << std::endl;
-				std::cout << "- Time: " << format_duration(time_duration) << std::endl;
-				std::cout << "- Data: " << std::fixed << std::setprecision(2) << data_gb << "[GB]" << std::endl;
-				std::cout << "- Speed: " << gbps << "[GB/s]" << std::endl;
-				total_time += time_duration;
-				total_data_gb += data_gb;
-
-				if (io_phases[i] == NIXL_WRITE) {		// Clear buffers before read
-					print_segment_title(phase_title("Clearing DRAM buffers"));
-					test_pattern_do(ptr, n_total_mapped_bytes, "clear");
-				}
-
-				print_segment_title("Freeing resources");
-				agent.releaseXferReq(treq);
-			}
-			print_segment_title(phase_title("Validating read data"));
-			test_pattern_do(ptr, n_total_mapped_bytes, "verify");
-
-			print_segment_title(phase_title("Un-Registering memory with NIXL"));
-			agent.deregisterMem(bdev_reg);
-			agent.deregisterMem(dram_reg);
-			free(ptr);
-
-			print_segment_title("TEST SUMMARY");
-			std::cout << "Total time: " << format_duration(total_time) << std::endl;
-			std::cout << "Total data: " << std::fixed << std::setprecision(2) << total_data_gb << " GB" << std::endl;
-			std::cout << line_str << std::endl;
-
-			return 0;
-		} catch (const std::exception& e) {
-			std::cerr << "Exception during test execution: " << e.what() << std::endl;
-			return -1;
+			d.addr = (1<<20) + (i*transfer_size);	// Offset of 1[MB] block-device + RAM buffer offset
+			d.devId = bdev_descriptor;
+			bdev_io_dst.addDesc(d);
+			printProgress(float(i + 1) / num_transfers);
 		}
 
+		print_segment_title(phase_title("Registering memory with NIXL"));
+		nixl_reg_dlist_t dram_reg(DRAM_SEG), bdev_reg(BLK_SEG);
+		{	// Register the large buffer as 2 halfs, just for testing > 1 buf
+			nixlBlobDesc d;
+			d.len = n_total_mapped_bytes/2;
+			d.devId = 0;
+			for (int i = 0; i < 2; i++ )
+				d.addr = (uintptr_t)((u_int64_t)ptr + i*d.len); dram_reg.addDesc(d);
+
+			d.len = n_total_mapped_bytes/4;	// GUSLITODO Why is it needed?
+			d.devId = bdev_descriptor;
+			for (int i = 0; i < 4; i++ )
+				d.addr = (1UL << 20) + i*d.len; bdev_reg.addDesc(d);
+
+			enum nixl_status_t rv;
+			rv = agent.registerMem(dram_reg);
+			if (rv != NIXL_SUCCESS) {
+				std::cerr << "Failed reg:" << nixlEnumStrings::memTypeStr(dramg_reg.getType()) << ", rv=" << nixlEnumStrings::statusStr(rv) << std::endl;
+				return 1;
+			}
+			printProgress(0.5f);
+			rv = agent.registerMem(bdev_reg);
+			if (rv != NIXL_SUCCESS) {
+				std::cerr << "Failed reg:" << nixlEnumStrings::memTypeStr(bdev_reg.getType()) << ", rv=" << nixlEnumStrings::statusStr(rv) << std::endl;
+				return 1;
+			}
+			printProgress(1.0f);
+		}
+
+		nixlTime::us_t total_time(0);
+		double total_data_gb(0);
+		enum nixl_xfer_op_t io_phases = {NIXL_WRITE, NIXL_READ};	// First write - then read
+		for (int i = 0; i < 2; i++ ) {
+			const std::string io_t_str = nixlEnumStrings::xferOpStr(io_phases[i]);
+			print_segment_title(phase_title(io_t_str + " Test"));
+			nixlXferReqH* treq = nullptr;
+			nixl_status_t status = agent.createXferReq(io_phases[i], bdev_io_src, bdev_io_dst, agent_name, treq);
+			if (status != NIXL_SUCCESS) { std::cerr << "Failed to create req, rv=" << nixlEnumStrings::statusStr(status) << std::endl; if (treq) agent.releaseXferReq(treq); return -1; }
+			const nixlTime::us_t time_start = nixlTime::getUs();
+			status = agent.postXferReq(treq);
+			if (status < 0) { std::cerr << "Failed to post req, rv=" << nixlEnumStrings::statusStr(status) << std::endl; if (treq) agent.releaseXferReq(treq); return -1; }
+			do { // Wait for transfer to complete
+				status = agent.getXferStatus(treq);
+				if (status < 0) { std::cerr << "Failed during transfer req, rv=" << nixlEnumStrings::statusStr(status) << std::endl; if (treq) agent.releaseXferReq(treq); return -1; }
+			} while (status == NIXL_IN_PROG);
+
+			const nixlTime::us_t time_end = nixlTime::getUs();
+			const nixlTime::us_t time_duration = time_end - time_start;
+			const double data_gb = (double)n_total_mapped_bytes / (double)gb_size;
+			const double seconds = (time_duration / 1000000.0);
+			std::cout << io_t_str << " completed with rv=" << nixlEnumStrings::statusStr(status) << std::endl;
+			std::cout << "- Time: " << format_duration(time_duration) << std::endl;
+			std::cout << "- Data: " << std::fixed << std::setprecision(2) << data_gb << "[GB]" << std::endl;
+			std::cout << "- Speed: " << (data_gb / seconds) << "[GB/s]" << std::endl;
+			total_time += time_duration;
+			total_data_gb += data_gb;
+
+			if (io_phases[i] == NIXL_WRITE) {		// Clear buffers before read
+				print_segment_title(phase_title("Clearing DRAM buffers"));
+				test_pattern_do(ptr, n_total_mapped_bytes, "clear");
+			}
+			print_segment_title("Freeing resources");
+			agent.releaseXferReq(treq);
+		}
+		print_segment_title(phase_title("Validating read data"));
+		test_pattern_do(ptr, n_total_mapped_bytes, "verify");
+
+		print_segment_title(phase_title("Un-Registering memory with NIXL"));
+		agent.deregisterMem(bdev_reg);
+		agent.deregisterMem(dram_reg);
+
+		print_segment_title("TEST SUMMARY");
+		std::cout << "Total time: " << format_duration(total_time) << std::endl;
+		std::cout << "Total data: " << std::fixed << std::setprecision(2) << total_data_gb << "[GB]" << std::endl;
+		std::cout << line_str << std::endl;
+		return 0;
 	}
 }
 
 int main(int argc, char *argv[]) {
 	std::cout << "NIXL GUSLI Plugin Test" << std::endl;
-	int opt, num_transfers = default_num_transfers;
-	size_t transfer_size = default_transfer_size;
+	int opt, num_transfers = gtest::default_num_transfers;
+	size_t transfer_size = gtest::default_transfer_size;
 
-    while ((opt = getopt(argc, argv, "n:s:d:h")) != -1) {
-        switch (opt) {
-            case 'n': num_transfers = std::stoi( optarg); break;
-            case 's': transfer_size = std::stoull(optarg); break;
-            case 'h':
-            default:
-                std::cout << absl::StrFormat("Usage: %s [-n num_transfers] [-s transfer_size] [-h]", argv[0]) << std::endl;
-                std::cout << absl::StrFormat("  -n num_transfers      Number of transfers (default: %d)", default_num_transfers) << std::endl;
-                std::cout << absl::StrFormat("  -s transfer_size      Size of each transfer in bytes (default: %zu)", default_transfer_size) << std::endl;
-                std::cout << absl::StrFormat("  -D                    Use O_DIRECT for file I/O") << std::endl;
-                std::cout << absl::StrFormat("  -h                    Show this help message") << std::endl;
-                return (opt == 'h') ? 0 : 1;
-        }
-    }
+	while ((opt = getopt(argc, argv, "n:s:d:h")) != -1) {
+		switch (opt) {
+			case 'n': num_transfers = std::stoi( optarg); break;
+			case 's': transfer_size = std::stoull(optarg); break;
+			case 'h':
+			default:
+				std::cout << absl::StrFormat("Usage: %s [-n num_transfers] [-s transfer_size] [-h]", argv[0]) << std::endl;
+				std::cout << absl::StrFormat("  -n num_transfers      Number of transfers (default: %d)", gtest::default_num_transfers) << std::endl;
+				std::cout << absl::StrFormat("  -s transfer_size      Size of each transfer in bytes (default: %zu)", gtest::default_transfer_size) << std::endl;
+				std::cout << absl::StrFormat("  -h                    Show this help message") << std::endl;
+				return (opt == 'h') ? 0 : 1;
+		}
+	}
 
 	gtest base_test(num_transfers, transfer_size);
 	if (base_test.run_write_read_verify() < 0)

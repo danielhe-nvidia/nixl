@@ -62,6 +62,9 @@ GUSLITODO: prepXfer - how to guarantee mmap area
 GUSLITODO: How does NIXL handle multiple block devices served by a single driver?
 GUSLITODO: singleXfer to 1 block device assumption, is it ok?
 GUSLITODO: How to extract the file descriptor of the iostreams so Gusli will flush its logs into the same file descriptor.
+How does NIXL handle multiple block devices served by a single driver?
+gusli::global_clnt_context is the driver, and each block device is specified by its standard 16 bytes uuid (gusli::backend_bdev_id)
+
 
 		mem.emplace_back(gusli::io_buffer_t{ .ptr = my_io.io_buf, .byte_len = my_io.buf_size });
 

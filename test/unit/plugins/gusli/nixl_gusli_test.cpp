@@ -47,25 +47,30 @@ namespace {
 	constexpr double us_to_s(double us) { return us / 1000000.0; }
 	std::string center_str(const std::string& str) { return std::string((line_width - str.length()) / 2, ' ') + str; }
 
-	struct PosixMemalignDeleter {
-		void operator()(void* ptr) const {
-			if (ptr) free(ptr);
-		}
-	};
-
-	void fill_test_pattern(void* buffer, size_t size) {	// Helper function to fill buffer with repeating pattern
-		static constexpr const char test_phrase[] = "|NIXL Storage Test Pattern 2025 GUSLI";
-		static constexpr const size_t test_phrase_len = sizeof(test_phrase) - 1; // -1 to exclude null terminator
+	bool test_pattern_do(void* buffer, size_t size, const char* action) {
+		static constexpr const size_t test_phrase_len = 32;
+		char test_phrase[test_phrase_len+1] __attribute__((aligned(sizeof(long))));
+		strcpy(test_phrase, "|NIXL bdev 32[b] GUSLI pattern |");
 		char* buf = (char*)buffer;
-		size_t i = 0;
-		while (i < size) {
-			const size_t remaining = (size - i);
-			const size_t copy_len = (remaining < test_phrase_len) ? remaining : test_phrase_len;
-			memcpy(&buf[i], test_phrase, copy_len);
-			i += copy_len;
+		if (action[0] == 'f') {						// Fill
+			for (size_t i; i < size; i += test_phrase_len) {
+				*((size_t*)&test_phrase[24]) = i;		// Unique last 64 bits for each 32[b] string
+				memcpy(&buf[i], test_phrase, test_phrase_len);
+			}
+		} else if (action[0] == 'c') {				// Clear
+			memset(buffer, 0, size);
+		} else {									// Verify
+			for (size_t i; i < size; i += test_phrase_len) {
+				*((size_t*)&test_phrase[24]) = i;		// Unique last 64 bits for each 32[b] string
+				if (0 != memcmp(&buf[i], test_phrase, test_phrase_len)) {
+					std::cerr << "DRAM buffer " << i << " validation failed with error\n";
+					return false;
+				}
+			}
 		}
+		return true;
 	}
-	void clear_buffer(void* buffer, size_t size) { memset(buffer, 0, size); }
+	void clear_buffer(void* buffer, size_t size) {  }
 
 	std::string format_duration(nixlTime::us_t us) {	// Helper function to format duration
 		const nixlTime::ms_t ms = us/1000.0;
@@ -178,10 +183,10 @@ int main(int argc, char *argv[]) {
 		std::cerr << "Error: Invalid page size returned by sysconf" << std::endl;
 		return 1;
 	}
-	if (transfer_size % page_size != 0) {		// align transfer size to page size
+	if (num_transfers % 4)					// Make num_transfers aligned to 4
+		num_transfers = ((num_transfers + 3) / 4) * 4;
+	if ((transfer_size % page_size) != 0) 	// align transfer size to page size
 		transfer_size = ((transfer_size + page_size - 1) / page_size) * page_size;
-		std::cout << "Adjusted transfer size to " << transfer_size << "[bytes]" << std::endl;
-	}
 
 	// Convert directory path to absolute path using std::filesystem
 	std::filesystem::path path_obj(test_files_dir_path);
@@ -223,13 +228,9 @@ int main(int argc, char *argv[]) {
 		}
 	}
 	//const nixl_status_t status = agent.makeConnection(const std::string &remote_agent, const nixl_opt_args_t* extra_params); GUSLITODO
-
+	int bdev_descriptor = 555555; GUSLITODO
     try {
         print_segment_title(phase_title("Allocating and initializing buffers"));
-
-		// Allocate resources
-		std::vector<std::unique_ptr<void, PosixMemalignDeleter>> dram_addr;
-		dram_addr.reserve(num_transfers);
 
         std::vector<tempFile> fd;
         fd.reserve(num_transfers);
@@ -242,210 +243,132 @@ int main(int argc, char *argv[]) {
         mode_t file_mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;  // rw-r--r--
 
         // Create descriptor lists
-        nixl_reg_dlist_t dram_for_posix(DRAM_SEG);
-        nixl_reg_dlist_t file_for_posix(FILE_SEG);
-        nixl_xfer_dlist_t dram_for_posix_xfer(DRAM_SEG);
-        nixl_xfer_dlist_t file_for_posix_xfer(FILE_SEG);
+        nixl_xfer_dlist_t bdev_io_src(DRAM_SEG), bdev_io_dst(BLK_SEG);
         std::unique_ptr<nixlBlobDesc[]> dram_buf(new nixlBlobDesc[num_transfers]);
-        std::unique_ptr<nixlBlobDesc[]> ftrans(new nixlBlobDesc[num_transfers]);
-        nixlXferReqH* treq = nullptr;
+        std::unique_ptr<nixlBlobDesc[]> bdev_buf(new nixlBlobDesc[num_transfers]);
         std::string name;
 
         // Control variables
         int ret = 0;
         int i = 0;
-        nixlTime::us_t time_start;
-        nixlTime::us_t time_end;
-        nixlTime::us_t time_duration;
         nixlTime::us_t total_time(0);
         double total_data_gb(0);
-        double gbps;
-        double seconds;
-        double data_gb;
 
-        // Allocate and initialize DRAM buffer
-        for (i = 0; i < num_transfers; ++i) {
-            void* ptr;
-            if (posix_memalign(&ptr, page_size, transfer_size) != 0) {
-                std::cerr << "DRAM allocation failed" << std::endl;
-                return 1;
-            }
-            dram_addr.emplace_back(ptr);
-            fill_test_pattern(dram_addr.back().get(), transfer_size);
+		// Allocate and initialize DRAM buffer
+		const size_t n_total_mapped_bytes = num_transfers * transfer_size;
+		void* ptr;
+		if (posix_memalign(&ptr, page_size, n_total_mapped_bytes) != 0) {
+			std::cerr << "DRAM allocation failed" << std::endl;
+			return 1;
+		}
+		test_pattern_do(ptr, n_total_mapped_bytes, "fill");
+		for (i = 0; i < num_transfers; ++i) {
+			dram_buf[i].len = transfer_size;
+			dram_buf[i].addr = (uintptr_t)((u_int64_t)ptr + (i*transfer_size));
+			dram_buf[i].devId = 0;
+			bdev_io_src.addDesc(dram_buf[i]);
 
-            // Create test file
-            name = generate_timestamped_filename();
-            name = test_files_dir_path + "/" + name + "_" + std::to_string(i);
+			bdev_buf[i].len = transfer_size;
+			bdev_buf[i].addr = (1<<20) + (i*transfer_size);	// Offset of 1[MB] block-device
+			bdev_buf[i].devId = bdev_descriptor;
+			bdev_io_dst.addDesc(bdev_buf[i]);
+			printProgress(float(i + 1) / num_transfers);
+		}
 
-            try {
-                fd.emplace_back(name, file_open_flags, file_mode);
-            } catch (const std::exception& e) {
-                std::cerr << "Failed to open file: " << name << " - " << e.what() << std::endl;
-                return 1;
-            }
+		print_segment_title(phase_title("Registering memory with NIXL"));
+		nixl_reg_dlist_t dram_reg(DRAM_SEG), bdev_reg(BLK_SEG);
+		{	// Register the large buffer as 2 halfs, just for testing > 1 buf
+			nixlBlobDesc d;
+			d.len = n_total_mapped_bytes/2;
+			d.devId = 0;
+			d.addr = (uintptr_t)((u_int64_t)ptr + 0*d.len); dram_reg.addDesc(d);
+			d.addr = (uintptr_t)((u_int64_t)ptr + 1*d.len); dram_reg.addDesc(d);
 
-            dram_buf[i].addr   = (uintptr_t)(dram_addr.back().get());
-            dram_buf[i].len    = transfer_size;
-            dram_buf[i].devId  = 0;
-            dram_for_posix.addDesc(dram_buf[i]);
-            dram_for_posix_xfer.addDesc(dram_buf[i]);
+			d.len = n_total_mapped_bytes/4;	// GUSLITODO Why is it needed?
+			d.devId = bdev_descriptor;
+			d.addr = (1<<20) + 0*d.len; bdev_reg.addDesc(d);
+			d.addr = (1<<20) + 1*d.len; bdev_reg.addDesc(d);
+			d.addr = (1<<20) + 2*d.len; bdev_reg.addDesc(d);
+			d.addr = (1<<20) + 3*d.len; bdev_reg.addDesc(d);
 
-            ftrans[i].addr  = 0;
-            ftrans[i].len   = transfer_size;
-            ftrans[i].devId = fd[i];
-            file_for_posix.addDesc(ftrans[i]);
-            file_for_posix_xfer.addDesc(ftrans[i]);
+			i = 0;
+			enum nixl_status_t rv;
+			rv = agent.registerMem(dram_reg);
+			if (rv != NIXL_SUCCESS) {
+				std::cerr << "Failed reg:" << nixlEnumStrings::memTypeStr(dramg_reg.getType()) << ", rv=" << nixlEnumStrings::statusStr(rv) << std::endl;
+				return 1;
+			}
+			printProgress(float(++i) / 2);
+			rv = agent.registerMem(bdev_reg);
+			if (rv != NIXL_SUCCESS) {
+				std::cerr << "Failed reg:" << nixlEnumStrings::memTypeStr(bdev_reg.getType()) << ", rv=" << nixlEnumStrings::statusStr(rv) << std::endl;
+				return 1;
+			}
+			printProgress(float(i + 1) / 2);
+		}
 
-            printProgress(float(i + 1) / num_transfers);
-        }
+		enum nixl_xfer_op_t io_phases = {NIXL_WRITE, NIXL_READ};	// First write - then read
+		for (int io_t = 0; io_t < 2; io_t++ ) {
+			const std::string io_t_str = nixlEnumStrings::xferOpStr(io_phases[io_t]);
+			print_segment_title(phase_title(io_t_str + " Test"));
+			nixlXferReqH* treq = nullptr;
+			nixl_status_t status = agent.createXferReq(io_phases[io_t], bdev_io_src, bdev_io_dst, agent_name, treq);
+			if (status != NIXL_SUCCESS) {
+				std::cerr << "Failed to create transfer request - status: " << nixlEnumStrings::statusStr(status) << std::endl;
+				return 1;
+			}
+			const nixlTime::us_t time_start = nixlTime::getUs();
+			status = agent.postXferReq(treq);
+			if (status < 0) {
+				std::cerr << "Failed to post transfer request - status: " << nixlEnumStrings::statusStr(status) << std::endl;
+				agent.releaseXferReq(treq);
+				return 1;
+			}
+			do { // Wait for transfer to complete
+				status = agent.getXferStatus(treq);
+				if (status < 0) {
+					std::cerr << "Error during transfer - status: " << nixlEnumStrings::statusStr(status) << std::endl;
+					agent.releaseXferReq(treq);
+					return 1;
+				}
+			} while (status == NIXL_IN_PROG);
 
-        print_segment_title(phase_title("Registering memory with NIXL"));
+			const nixlTime::us_t time_end = nixlTime::getUs();
+			const nixlTime::us_t time_duration = time_end - time_start;
+			const double data_gb = (float(transfer_size) * num_transfers) / (gb_size);
+			const double seconds = us_to_s(time_duration);
+			const double gbps = data_gb / seconds;
+			std::cout << io_t_str << ": completed with status: " << nixlEnumStrings::statusStr(status) << std::endl;
+			std::cout << "- Time: " << format_duration(time_duration) << std::endl;
+			std::cout << "- Data: " << std::fixed << std::setprecision(2) << data_gb << "[GB]" << std::endl;
+			std::cout << "- Speed: " << gbps << "[GB/s]" << std::endl;
+			total_time += time_duration;
+			total_data_gb += data_gb;
 
-        i = 0;
-        ret = agent.registerMem(dram_for_posix);
-        if (ret != NIXL_SUCCESS) {
-            std::cerr << "Failed to register DRAM memory with NIXL" << std::endl;
-            return 1;
-        }
-        printProgress(float(++i) / 2);
+			if (io_phases[io_t] == NIXL_WRITE) {		// Clear buffers before read
+				print_segment_title(phase_title("Clearing DRAM buffers"));
+				test_pattern_do(ptr, n_total_mapped_bytes, "clear");
+			}
 
-        ret = agent.registerMem(file_for_posix);
-        if (ret != NIXL_SUCCESS) {
-            std::cerr << "Failed to register file memory with NIXL" << std::endl;
-            return 1;
-        }
-        printProgress(float(i + 1) / 2);
+			print_segment_title("Freeing resources");
+			agent.releaseXferReq(treq); }
+		}
+		print_segment_title(phase_title("Validating read data"));
+		test_pattern_do(ptr, n_total_mapped_bytes, "verify");
 
-        print_segment_title(phase_title("Memory to File Transfer (Write Test)"));
+		print_segment_title(phase_title("Un-Registering memory with NIXL"));
+		agent.deregisterMem(bdev_reg);
+		agent.deregisterMem(dram_reg);
+		free(ptr);
 
-        status = agent.createXferReq(NIXL_WRITE, dram_for_posix_xfer, file_for_posix_xfer, agent_name, treq);
-        if (status != NIXL_SUCCESS) {
-            std::cerr << "Failed to create write transfer request - status: " << nixlEnumStrings::statusStr(status) << std::endl;
-            return 1;
-        }
+		print_segment_title("TEST SUMMARY");
+		std::cout << "Total time: " << format_duration(total_time) << std::endl;
+		std::cout << "Total data: " << std::fixed << std::setprecision(2) << total_data_gb << " GB" << std::endl;
+		std::cout << line_str << std::endl;
 
-        time_start = nixlTime::getUs();
-        status = agent.postXferReq(treq);
-        if (status < 0) {
-            std::cerr << "Failed to post write transfer request - status: " << nixlEnumStrings::statusStr(status) << std::endl;
-            agent.releaseXferReq(treq);
-            return 1;
-        }
-
-        // Wait for transfer to complete
-        do {
-            status = agent.getXferStatus(treq);
-            if (status < 0) {
-                std::cerr << "Error during write transfer - status: " << nixlEnumStrings::statusStr(status) << std::endl;
-                agent.releaseXferReq(treq);
-                return 1;
-            }
-        } while (status == NIXL_IN_PROG);
-
-        time_end = nixlTime::getUs();
-        time_duration = time_end - time_start;
-        total_time += time_duration;
-
-        data_gb = (float(transfer_size) * num_transfers) / (gb_size);
-        total_data_gb += data_gb;
-        seconds = us_to_s(time_duration);
-        gbps = data_gb / seconds;
-
-        std::cout << "Write completed with status: " << nixlEnumStrings::statusStr(status) << std::endl;
-        std::cout << "- Time: " << format_duration(time_duration) << std::endl;
-        std::cout << "- Data: " << std::fixed << std::setprecision(2) << data_gb << " GB" << std::endl;
-        std::cout << "- Speed: " << gbps << " GB/s" << std::endl;
-
-        print_segment_title(phase_title("Syncing files"));
-        std::cout << "Syncing files to ensure data is written to disk" << std::endl;
-        // Sync all files to ensure data is written to disk
-        for (i = 0; i < num_transfers; ++i) {
-            if (fsync(fd[i]) < 0) {
-                std::cerr << "Failed to sync file " << i << " - " << strerror(errno) << std::endl;
-                return 1;
-            }
-            printProgress(float(i + 1) / num_transfers);
-        }
-
-        print_segment_title(phase_title("Clearing DRAM buffers"));
-        std::cout << "Clearing DRAM buffers" << std::endl;
-        for (i = 0; i < num_transfers; ++i) {
-            clear_buffer(dram_addr[i].get(), transfer_size);
-            printProgress(float(i + 1) / num_transfers);
-        }
-
-        print_segment_title(phase_title("File to Memory Transfer (Read Test)"));
-
-        status = agent.createXferReq(NIXL_READ, dram_for_posix_xfer, file_for_posix_xfer, agent_name, treq);
-        if (status != NIXL_SUCCESS) {
-            std::cerr << "Failed to create read transfer request - status: " << nixlEnumStrings::statusStr(status) << std::endl;
-            return 1;
-        }
-
-        // Execute read transfer and measure performance
-        time_start = nixlTime::getUs();
-        status = agent.postXferReq(treq);
-        if (status < 0) {
-            std::cerr << "Failed to post read transfer request - status: " << nixlEnumStrings::statusStr(status) << std::endl;
-            agent.releaseXferReq(treq);
-            return 1;
-        }
-
-        // Wait for transfer to complete
-        do {
-            status = agent.getXferStatus(treq);
-            if (status < 0) {
-                std::cerr << "Error during read transfer - status: " << nixlEnumStrings::statusStr(status) << std::endl;
-                agent.releaseXferReq(treq);
-                return 1;
-            }
-        } while (status == NIXL_IN_PROG);
-
-        time_end = nixlTime::getUs();
-        time_duration = time_end - time_start;
-        total_time += time_duration;
-
-        data_gb = (float(transfer_size) * num_transfers) / (gb_size);
-        total_data_gb += data_gb;
-        seconds = us_to_s(time_duration);
-        gbps = data_gb / seconds;
-
-        std::cout << "Read completed with status: " << nixlEnumStrings::statusStr(status) << std::endl;
-        std::cout << "- Time: " << format_duration(time_duration) << std::endl;
-        std::cout << "- Data: " << std::fixed << std::setprecision(2) << data_gb << " GB" << std::endl;
-        std::cout << "- Speed: " << gbps << " GB/s" << std::endl;
-
-        print_segment_title(phase_title("Validating read data"));
-
-        std::unique_ptr<char[]> expected_buffer = std::make_unique<char[]>(transfer_size);
-        fill_test_pattern(expected_buffer.get(), transfer_size);
-
-        for (i = 0; i < num_transfers; ++i) {
-            int ret = memcmp(dram_addr[i].get(), expected_buffer.get(), transfer_size);
-            if (ret != 0) {
-                std::cerr << "DRAM buffer " << i << " validation failed with error: " << ret << std::endl;
-                return 1;
-            }
-            printProgress(float(i + 1) / num_transfers);
-        }
-
-        print_segment_title("Freeing resources");
-
-        if (treq) {
-            agent.releaseXferReq(treq);
-        }
-
-        agent.deregisterMem(file_for_posix);
-        agent.deregisterMem(dram_for_posix);
-
-        print_segment_title("TEST SUMMARY");
-        std::cout << "Total time: " << format_duration(total_time) << std::endl;
-        std::cout << "Total data: " << std::fixed << std::setprecision(2) << total_data_gb << " GB" << std::endl;
-        std::cout << line_str << std::endl;
-
-        return ret;
-    } catch (const std::exception& e) {
-        std::cerr << "Exception during test execution: " << e.what() << std::endl;
-        return 1;
-    }
+		return 0;
+	} catch (const std::exception& e) {
+		std::cerr << "Exception during test execution: " << e.what() << std::endl;
+		return -1;
+	}
 }

@@ -33,9 +33,8 @@
 #include <cstdio>
 #include <getopt.h>
 
-namespace {
-    const size_t page_size = sysconf(_SC_PAGESIZE);
-
+class gtest {		// Gusli tester class
+	const size_t page_size = sysconf(_SC_PAGESIZE);
 	static constexpr const int default_num_transfers = 1024;
 	static constexpr const size_t default_transfer_size = 1 * 512 * 1024; // 512KB
 	static constexpr const size_t kb_size = (1 << 10), mb_size = (1 << 20), gb_size = (1 << 30);
@@ -44,8 +43,8 @@ namespace {
 	static constexpr const char default_test_files_dir_path[] = "tmp/testfiles";
 	static constexpr const char* agent_name = "GUSLITester";
 
-	constexpr double us_to_s(double us) { return us / 1000000.0; }
-	std::string center_str(const std::string& str) { return std::string((line_width - str.length()) / 2, ' ') + str; }
+	static constexpr double us_to_s(double us) { return us / 1000000.0; }
+	static std::string center_str(const std::string& str) { return std::string((line_width - str.length()) / 2, ' ') + str; }
 
 	bool test_pattern_do(void* buffer, size_t size, const char* action) {
 		static constexpr const size_t test_phrase_len = 32;
@@ -70,21 +69,13 @@ namespace {
 		}
 		return true;
 	}
-	void clear_buffer(void* buffer, size_t size) {  }
 
-	std::string format_duration(nixlTime::us_t us) {	// Helper function to format duration
+	static std::string format_duration(nixlTime::us_t us) {	// Helper function to format duration
 		const nixlTime::ms_t ms = us/1000.0;
 		if (ms < 1000)
 			return absl::StrFormat("%.0f[ms]", ms);
 		const double seconds = ms / 1000.0;
 		return absl::StrFormat("%.3f[sec]", seconds);
-	}
-
-	std::string generate_timestamped_filename(void) { // Helper function to generate timestamped filename
-		const std::time_t t = std::time(nullptr);
-		char timestamp[100];
-		std::strftime(timestamp, sizeof(timestamp), "%Y%m%d%H%M%S", std::localtime(&t));
-		return std::string("testfile.txt") + std::string(timestamp);
 	}
 
 	void printProgress(float progress) {
@@ -114,44 +105,6 @@ namespace {
 		std::cout << center_str(title) << std::endl;
 		std::cout << line_str << std::endl;
 	}
-
-	class tempFile {
-	 public:
-		int fd;
-		std::string path;
-		tempFile(const std::string& filename, int flags, mode_t mode = 0600) : path(filename) {
-			fd = open(filename.c_str(), flags, mode);	// Constructor: opens the file and stores the fd and path
-			if (fd == -1) {
-				throw std::runtime_error("Failed to open file: " + filename);
-			}
-		}
-		tempFile(const tempFile&) = delete;		// Deleted copy constructor and assignment to avoid double-close/unlink
-		tempFile& operator=(const tempFile&) = delete;
-		tempFile(tempFile&& other) noexcept : fd(other.fd), path(std::move(other.path)) { other.fd = -1; }	// Move constructor and assignment
-		tempFile& operator=(tempFile&& other) noexcept {
-			if (this != &other) {
-				close_fd();
-				path = std::move(other.path);
-				fd = other.fd;
-				other.fd = -1;
-			}
-			return *this;
-		}
-		operator int() const { return fd; }	// Conversion operator to int (file descriptor)
-
-		~tempFile() {	// Destructor: closes the fd and deletes the file
-			close_fd();
-			if (!path.empty())
-				unlink(path.c_str());
-		}
-	 private:
-		void close_fd(void) {
-			if (fd != -1) {
-				close(fd);
-				fd = -1;
-			}
-		}
-	};
 }
 
 int main(int argc, char *argv[]) {
@@ -230,29 +183,15 @@ int main(int argc, char *argv[]) {
 	//const nixl_status_t status = agent.makeConnection(const std::string &remote_agent, const nixl_opt_args_t* extra_params); GUSLITODO
 	int bdev_descriptor = 555555; GUSLITODO
     try {
-        print_segment_title(phase_title("Allocating and initializing buffers"));
-
-        std::vector<tempFile> fd;
-        fd.reserve(num_transfers);
-
-        // File open flags
-        int file_open_flags = O_RDWR|O_CREAT;
-        if (use_direct_io) {
-            file_open_flags |= O_DIRECT;
-        }
-        mode_t file_mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;  // rw-r--r--
-
+		print_segment_title(phase_title("Allocating and initializing buffers"));
         // Create descriptor lists
         nixl_xfer_dlist_t bdev_io_src(DRAM_SEG), bdev_io_dst(BLK_SEG);
         std::unique_ptr<nixlBlobDesc[]> dram_buf(new nixlBlobDesc[num_transfers]);
         std::unique_ptr<nixlBlobDesc[]> bdev_buf(new nixlBlobDesc[num_transfers]);
-        std::string name;
 
-        // Control variables
-        int ret = 0;
-        int i = 0;
-        nixlTime::us_t total_time(0);
-        double total_data_gb(0);
+		// Control variables
+		nixlTime::us_t total_time(0);
+		double total_data_gb(0);
 
 		// Allocate and initialize DRAM buffer
 		const size_t n_total_mapped_bytes = num_transfers * transfer_size;
@@ -262,7 +201,7 @@ int main(int argc, char *argv[]) {
 			return 1;
 		}
 		test_pattern_do(ptr, n_total_mapped_bytes, "fill");
-		for (i = 0; i < num_transfers; ++i) {
+		for (int i = 0; i < num_transfers; ++i) {
 			dram_buf[i].len = transfer_size;
 			dram_buf[i].addr = (uintptr_t)((u_int64_t)ptr + (i*transfer_size));
 			dram_buf[i].devId = 0;
@@ -308,11 +247,11 @@ int main(int argc, char *argv[]) {
 		}
 
 		enum nixl_xfer_op_t io_phases = {NIXL_WRITE, NIXL_READ};	// First write - then read
-		for (int io_t = 0; io_t < 2; io_t++ ) {
-			const std::string io_t_str = nixlEnumStrings::xferOpStr(io_phases[io_t]);
+		for (int i = 0; i < 2; i++ ) {
+			const std::string io_t_str = nixlEnumStrings::xferOpStr(io_phases[i]);
 			print_segment_title(phase_title(io_t_str + " Test"));
 			nixlXferReqH* treq = nullptr;
-			nixl_status_t status = agent.createXferReq(io_phases[io_t], bdev_io_src, bdev_io_dst, agent_name, treq);
+			nixl_status_t status = agent.createXferReq(io_phases[i], bdev_io_src, bdev_io_dst, agent_name, treq);
 			if (status != NIXL_SUCCESS) {
 				std::cerr << "Failed to create transfer request - status: " << nixlEnumStrings::statusStr(status) << std::endl;
 				return 1;
@@ -345,7 +284,7 @@ int main(int argc, char *argv[]) {
 			total_time += time_duration;
 			total_data_gb += data_gb;
 
-			if (io_phases[io_t] == NIXL_WRITE) {		// Clear buffers before read
+			if (io_phases[i] == NIXL_WRITE) {		// Clear buffers before read
 				print_segment_title(phase_title("Clearing DRAM buffers"));
 				test_pattern_do(ptr, n_total_mapped_bytes, "clear");
 			}

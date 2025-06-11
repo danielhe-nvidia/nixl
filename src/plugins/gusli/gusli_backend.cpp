@@ -25,8 +25,10 @@ nixlGusliEngine::nixlGusliEngine(const nixlBackendInitParams* np) : nixlBackendE
 		const nixl_b_params_t* gp = np->customParams;
 		if (gp->count("client_name") > 0)
 			p.client_name = gp->at("client_name").c_str();
-		if (gp->count("client_name") > 0)
-			p.max_num_simultanous_requests = std::stoi(gp->at("max_num_simultanous_requests"));
+		if (gp->count("max_num_simultaneous_requests") > 0)
+			p.max_num_simultaneous_requests = std::stoi(gp->at("max_num_simultaneous_requests"));
+		if (gp->count("config_file") > 0)
+			p.config_file = gp->at("config_file").c_str();
 	}
 	const int rv = lib->init(p);
 	this->initErr = (rv != 0);

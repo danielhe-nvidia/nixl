@@ -197,8 +197,11 @@ int main(int argc, char *argv[]) {
 	nixl_b_params_t params;
 	params["log"] = "????";		// GUSLITODO
 	params["client_name"] = agent_name;
-	params["path_to_config_file"] = "????";		// GUSLITODO
-	params["max_num_simultanous_requests"] = std::to_string(num_transfers);
+	params["config_file"] = "# version=1, bdevs: UUID type attach_op path security_cookie\n"
+		"050e8400 f X ./store.bin  sec=0x3\n"
+		"2b3f28dc K X /dev/nvme0n1 sec=0x7\n";
+
+	params["max_num_simultaneous_requests"] = std::to_string(num_transfers);
 
     // Print test configuration information
     print_segment_title("NIXL STORAGE TEST STARTING (GUSLI PLUGIN)");

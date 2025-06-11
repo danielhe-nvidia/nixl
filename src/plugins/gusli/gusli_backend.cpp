@@ -50,7 +50,7 @@ nixlGusliEngine::~nixlGusliEngine() {
 class nixlGusliMetadata : public nixlBackendMD {
  public:
 	gusli::backend_bdev_id bdev;
-	gusli::io_buffer_t map;
+	std::vector<gusli::io_buffer_t> io_bufs;
 	std::string metadata;
 	nixlGusliMetadata() : nixlBackendMD(true) {}
 	~nixlGusliMetadata() {}
@@ -63,6 +63,7 @@ GUSLITODO: How does NIXL handle multiple block devices served by a single driver
 GUSLITODO: singleXfer to 1 block device assumption, is it ok?
 GUSLITODO: How to extract the file descriptor of the iostreams so Gusli will flush its logs into the same file descriptor.
 
+		mem.emplace_back(gusli::io_buffer_t{ .ptr = my_io.io_buf, .byte_len = my_io.buf_size });
 
 nixl_status_t nixlGusliEngine::registerMem(const nixlBlobDesc &mem, const nixl_mem_t &nixl_mem, nixlBackendMD* &out) {
 	if (nixl_mem != BLK_SEG)
@@ -71,12 +72,9 @@ nixl_status_t nixlGusliEngine::registerMem(const nixlBlobDesc &mem, const nixl_m
 	if (!md)
 		GUSLI_LOG_RETURN(NIXL_ERR_BACKEND, "out of mem");
 	md->bdev = mem.devId; // GUSLITODO
-	md->map.ptr = (void*)mem.addr;
-	md->map.byte_len = mem.len;
 	md->metadata = mem.metaInfo;
-	std::vector<gusli::io_buffer_t> io_bufs;
-	io_bufs.emplace_back(md->map);
-	const gusli::connect_rv rv = lib->bdev_register_bufs(md->bdev, io_bufs);
+	md->io_bufs.emplace_back(gusli::io_buffer_t{ .ptr = (void*)mem.addr, .byte_len = mem.len });
+	const gusli::connect_rv rv = lib->bdev_bufs_register(md->bdev, md->io_bufs);
 	if (rv != gusli::connect_rv::C_OK) {
 		delete md;
 		GUSLI_LOG_RETURN(NIXL_ERR_BACKEND, "register buf rv=%d, [%p,0x%lx]", (int)rv, (void*)mem.addr, mem.len);
@@ -87,9 +85,10 @@ nixl_status_t nixlGusliEngine::registerMem(const nixlBlobDesc &mem, const nixl_m
 
 nixl_status_t nixlGusliEngine::deregisterMem(nixlBackendMD* _md) {
 	nixlGusliMetadata *md = (nixlGusliMetadata *)_md;
-	const gusli::connect_rv rv = lib->bdev_disconnect(md->bdev)
+	const gusli::connect_rv rv = lib->bdev_bufs_unregist(md->bdev, md->io_bufs);
+	//const gusli::connect_rv rv = lib->bdev_disconnect(md->bdev);		GUSLITODO
 	if (rv != gusli::connect_rv::C_OK) {
-		GUSLI_LOG_RETURN(NIXL_ERR_BACKEND, "unregister buf rv=%d, [%p,0x%lx]", (int)rv, (void*)md->map.ptr, md->map.byte_len);
+		GUSLI_LOG_RETURN(NIXL_ERR_BACKEND, "unregister buf rv=%d, [%p,0x%lx]", (int)rv, (void*)md->io_bufs[0].ptr, md->io_bufs[0].byte_len);
 	}
 	delete md;
 	return NIXL_SUCCESS;

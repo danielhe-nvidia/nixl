@@ -213,13 +213,16 @@ int main(int argc, char *argv[]) {
 
 	// Create GUSLI backend first - before allocating any resources
 	nixlBackendH* n_backend = nullptr;
-	const nixl_status_t status = agent.createBackend("GUSLI", params, n_backend);
-	if (status != NIXL_SUCCESS) {
-		std::cerr << std::endl << line_str << std::endl << center_str("ERROR: Backend Creation Failed") << std::endl << line_str << std::endl;
-		std::cerr << "Error creating GUSLI backend: " << nixlEnumStrings::statusStr(status) << std::endl;
-		std::cerr << std::endl << line_str << std::endl;
-		return 1;
+	{
+		const nixl_status_t status = agent.createBackend("GUSLI", params, n_backend);
+		if (status != NIXL_SUCCESS) {
+			std::cerr << std::endl << line_str << std::endl << center_str("ERROR: Backend Creation Failed") << std::endl << line_str << std::endl;
+			std::cerr << "Error creating GUSLI backend: " << nixlEnumStrings::statusStr(status) << std::endl;
+			std::cerr << std::endl << line_str << std::endl;
+			return 1;
+		}
 	}
+	//const nixl_status_t status = agent.makeConnection(const std::string &remote_agent, const nixl_opt_args_t* extra_params); GUSLITODO
 
     try {
         print_segment_title(phase_title("Allocating and initializing buffers"));

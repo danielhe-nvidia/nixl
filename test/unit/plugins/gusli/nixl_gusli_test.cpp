@@ -174,66 +174,59 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (page_size == 0) {
-        std::cerr << "Error: Invalid page size returned by sysconf" << std::endl;
-        return 1;
-    }
-
-    // If using O_DIRECT, align transfer size to page size
-	if (transfer_size % page_size != 0) {
+	if (page_size <= 0) {
+		std::cerr << "Error: Invalid page size returned by sysconf" << std::endl;
+		return 1;
+	}
+	if (transfer_size % page_size != 0) {		// align transfer size to page size
 		transfer_size = ((transfer_size + page_size - 1) / page_size) * page_size;
-		std::cout << "Adjusted transfer size to " << transfer_size << " bytes for O_DIRECT alignment" << std::endl;
+		std::cout << "Adjusted transfer size to " << transfer_size << "[bytes]" << std::endl;
 	}
 
-    // Convert directory path to absolute path using std::filesystem
-    std::filesystem::path path_obj(test_files_dir_path);
-    std::filesystem::create_directories(path_obj);
-    std::string abs_path = std::filesystem::absolute(path_obj).string();
+	// Convert directory path to absolute path using std::filesystem
+	std::filesystem::path path_obj(test_files_dir_path);
+	std::filesystem::create_directories(path_obj);
+	std::string abs_path = std::filesystem::absolute(path_obj).string();
 
-    // Initialize NIXL components first
-    nixlAgent agent(agent_name, nixlAgentConfig(true));
+	// Initialize NIXL components first
+	nixlAgent agent(agent_name, nixlAgentConfig(true));
 
 	// Set up backend parameters for gusli::global_clnt_context::init_params
 	nixl_b_params_t params;
 	params["log"] = "????";		// GUSLITODO
 	params["client_name"] = agent_name;
-	params["config_file"] = "# version=1, bdevs: UUID type attach_op path security_cookie\n"
-		"050e8400 f X ./store.bin  sec=0x3\n"
-		"2b3f28dc K X /dev/nvme0n1 sec=0x7\n";
-
+	params["config_file"] = "# version=1, bdevs: UUID, type, attach_op, direct, path, security_cookie\n"
+		"050e8400 f W N ./store.bin  sec=0x3\n"		// Local file in non direct mode
+		"2b3f28dc K X D /dev/nvme0n1 sec=0x7\n";	// NVME in direct mode
 	params["max_num_simultaneous_requests"] = std::to_string(num_transfers);
 
-    // Print test configuration information
-    print_segment_title("NIXL STORAGE TEST STARTING (GUSLI PLUGIN)");
-    std::cout << absl::StrFormat("Configuration:\n");
-    std::cout << absl::StrFormat("- Number of transfers: %d\n", num_transfers);
-    std::cout << absl::StrFormat("- Transfer size: %zu bytes\n", transfer_size);
-    std::cout << absl::StrFormat("- Total data: %.2f GB\n", (float(transfer_size) * num_transfers) / gb_size);
-    std::cout << absl::StrFormat("- Directory: %s\n", abs_path);
-    std::cout << absl::StrFormat("- Backend: %s\n", use_uring ? "io_uring" : "AIO");
-    std::cout << absl::StrFormat("- Direct I/O: %s\n", use_direct_io ? "enabled" : "disabled");
-    std::cout << std::endl;
-    std::cout << line_str << std::endl;
+	// Print test configuration information
+	print_segment_title("NIXL STORAGE TEST STARTING (GUSLI PLUGIN)");
+	std::cout << absl::StrFormat("Configuration:\n");
+	std::cout << absl::StrFormat("- Number of transfers: %d\n", num_transfers);
+	std::cout << absl::StrFormat("- Transfer size: %zu[B]\n", transfer_size);
+	std::cout << absl::StrFormat("- Total data: %.2f[GB]\n", (float(transfer_size) * num_transfers) / gb_size);
+	std::cout << absl::StrFormat("- Directory: %s\n", abs_path);
+	std::cout << absl::StrFormat("- Backend: %s\n", "GUSLI");
+	std::cout << absl::StrFormat("- Direct I/O: %s\n", "enabled");
+	std::cout << std::endl << line_str << std::endl;
 
-    // Create GUSLI backend first - before allocating any resources
-    nixlBackendH* posix = nullptr;
-    nixl_status_t status = agent.createBackend("GUSLI", params, posix);
-    if (status != NIXL_SUCCESS) {
-        std::cerr << std::endl << line_str << std::endl;
-        std::cerr << center_str("ERROR: Backend Creation Failed") << std::endl;
-        std::cerr << line_str << std::endl;
-        std::cerr << "Error creating GUSLI backend: " << nixlEnumStrings::statusStr(status) << std::endl;
-        std::cerr << std::endl << line_str << std::endl;
-        return 1;
-    }
+	// Create GUSLI backend first - before allocating any resources
+	nixlBackendH* n_backend = nullptr;
+	const nixl_status_t status = agent.createBackend("GUSLI", params, n_backend);
+	if (status != NIXL_SUCCESS) {
+		std::cerr << std::endl << line_str << std::endl << center_str("ERROR: Backend Creation Failed") << std::endl << line_str << std::endl;
+		std::cerr << "Error creating GUSLI backend: " << nixlEnumStrings::statusStr(status) << std::endl;
+		std::cerr << std::endl << line_str << std::endl;
+		return 1;
+	}
 
-    // Only proceed with resource allocation if backend creation succeeded
     try {
         print_segment_title(phase_title("Allocating and initializing buffers"));
 
-        // Allocate resources
-        std::vector<std::unique_ptr<void, PosixMemalignDeleter>> dram_addr;
-        dram_addr.reserve(num_transfers);
+		// Allocate resources
+		std::vector<std::unique_ptr<void, PosixMemalignDeleter>> dram_addr;
+		dram_addr.reserve(num_transfers);
 
         std::vector<tempFile> fd;
         fd.reserve(num_transfers);

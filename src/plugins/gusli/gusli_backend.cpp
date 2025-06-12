@@ -17,6 +17,14 @@
 #include "gusli_backend.h"
 #include "common/str_tools.h"
 //#include <iostream>
+#define GUSLI_LOG_ERR(format, ...) do { \
+	NIXL_ERROR << absl::StrFormat("GUSLI %s() %s[%d]" format, __PRETTY_FUNCTION__, __FILE__, __LINE__, ##__VA_ARGS__); \
+} while (0)
+
+#define GUSLI_LOG_RETURN(rv, format, ...) do { \
+	GUSLI_LOG_ERR("error=%d, " format, (int)rv, ##__VA_ARGS__); \
+	return error_code; \
+} while (0)
 
 nixlGusliEngine::nixlGusliEngine(const nixlBackendInitParams* np) : nixlBackendEngine(np) {
 	lib = &gusli::global_clnt_context::get();
@@ -58,8 +66,6 @@ class nixlGusliMetadata : public nixlBackendMD {
 
 /*
 GUSLITODO: open_bdev by uuid, where to take it? which function to call
-GUSLITODO: register memory how, how to ensure io
-GUSLITODO: prepXfer - how to guarantee mmap area
 GUSLITODO: How does NIXL handle multiple block devices served by a single driver?
 GUSLITODO: singleXfer to 1 block device assumption, is it ok?
 GUSLITODO: How to extract the file descriptor of the iostreams so Gusli will flush its logs into the same file descriptor.
@@ -72,13 +78,36 @@ NIXL bench - see how gusli connects there?
 Are there special instructions on how to compile and run a unit-test on a laptop? Specific chapel versions, etc
 /contrib/build.sh --nixl /Users/vladbu/src/nixl
 
+4. You are doing a loopback plugin, there is no "remote" in your case anyway. During memory registration you can pass the nvme path string via nixlBlobDesc.metaInfo and save a mapping from devId to that string in some internal map if you need it for the following Xfer ops.
+
 */
+static nixl_status_t __err_conv(const gusli::connect_rv rv) {	// Convert conenction error
+	if (rv == gusli::connect_rv::C_OK)              return NIXL_SUCCESS;
+	if (rv == gusli::connect_rv::C_NO_DEVICE)       return NIXL_ERR_NOT_FOUND;
+	if (rv == gusli::connect_rv::C_WRONG_ARGUMENTS) return NIXL_ERR_INVALID_PARAM;
+	return NIXL_ERR_BACKEND;
+}
 
-nixl_status_t nixlGusliEngine::connect(   const std::string &remote_agent) { return NIXL_SUCCESS; }
-nixl_status_t nixlGusliEngine::disconnect(const std::string &remote_agent) { return NIXL_SUCCESS; }
+nixl_status_t nixlGusliEngine::connect(const std::string &remote_agent) {				/// GUSLITODO - No!!!
+	gusli::backend_bdev_id bdev;
+	bdev.set_from(remote_agent);
+	const gusli::connect_rv rv = lib->bdev_connect(bdev);
+	if (rv != gusli::connect_rv::C_OK)
+		GUSLI_LOG_RETURN(__err_conv(rv) "connect uuid=%s rv=%d", bdev.uuid, (int)rv);
+	return NIXL_SUCCESS;
+}
 
+nixl_status_t nixlGusliEngine::disconnect(const std::string &remote_agent) {			/// GUSLITODO
+	gusli::backend_bdev_id bdev;
+	bdev.set_from(remote_agent);
+	const gusli::connect_rv rv = lib->bdev_disconnect(bdev);
+	if (rv != gusli::connect_rv::C_OK)
+		GUSLI_LOG_RETURN(__err_conv(rv) "disconnect uuid=%s rv=%d", bdev.uuid, (int)rv);
+	return NIXL_SUCCESS;
+}
 
 nixl_status_t nixlGusliEngine::registerMem(const nixlBlobDesc &mem, const nixl_mem_t &nixl_mem, nixlBackendMD* &out) {
+	out = nullptr;
 	if (nixl_mem != BLK_SEG)
 		GUSLI_LOG_RETURN(NIXL_ERR_BACKEND, "type not supported %d", (int)nixl_mem);
 	nixlGusliMetadata *md = new nixlGusliMetadata();
@@ -90,7 +119,7 @@ nixl_status_t nixlGusliEngine::registerMem(const nixlBlobDesc &mem, const nixl_m
 	const gusli::connect_rv rv = lib->bdev_bufs_register(md->bdev, md->io_bufs);
 	if (rv != gusli::connect_rv::C_OK) {
 		delete md;
-		GUSLI_LOG_RETURN(NIXL_ERR_BACKEND, "register buf rv=%d, [%p,0x%lx]", (int)rv, (void*)mem.addr, mem.len);
+		GUSLI_LOG_RETURN(__err_conv(rv), "register buf rv=%d, [%p,0x%lx]", (int)rv, (void*)mem.addr, mem.len);
 	}
 	out = (nixlBackendMD*)md;
 	return NIXL_SUCCESS;
@@ -99,13 +128,30 @@ nixl_status_t nixlGusliEngine::registerMem(const nixlBlobDesc &mem, const nixl_m
 nixl_status_t nixlGusliEngine::deregisterMem(nixlBackendMD* _md) {
 	nixlGusliMetadata *md = (nixlGusliMetadata *)_md;
 	const gusli::connect_rv rv = lib->bdev_bufs_unregist(md->bdev, md->io_bufs);
-	//const gusli::connect_rv rv = lib->bdev_disconnect(md->bdev);		GUSLITODO
-	if (rv != gusli::connect_rv::C_OK) {
-		GUSLI_LOG_RETURN(NIXL_ERR_BACKEND, "unregister buf rv=%d, [%p,0x%lx]", (int)rv, (void*)md->io_bufs[0].ptr, md->io_bufs[0].byte_len);
-	}
+	if (rv != gusli::connect_rv::C_OK)
+		GUSLI_LOG_RETURN(__err_conv(rv), "unregister buf rv=%d, [%p,0x%lx]", (int)rv, (void*)md->io_bufs[0].ptr, md->io_bufs[0].byte_len);
 	delete md;
 	return NIXL_SUCCESS;
 }
+
+/********************************** IO ***************************************/
+class nixlGusliBackendReqH : public nixlBackendReqH {
+	static void completion_cb(nixlGusliBackendReqH *c) {
+		NIXL_TRACE << absl::StrFormat("GUSLI IO[op=%c] o[%p]_done, rv=%d\n", c->io.params.op, c, c->io.get_error());
+	}
+ public:
+	gusli::io_request io;
+	nixlGusliBackendReqH(const nixl_xfer_op_t _op) {
+		io.params.set_completion(this, completion_cb);
+		io.params.op = (_op == NIXL_WRITE) ? gusli::G_WRITE : gusli::G_READ;
+	}
+	~nixlGusliBackendReqH() {}
+	void exec(void op) {
+		const int n_bytes = (int)io.params.buf_size();
+		NIXL_TRACE << absl::StrFormat("GUSLI IO[op=%c] o[%p]start, n_ranges=%u\n", c->io.params.op, this, io.params.num_ranges());
+		io.submit_io();
+	}
+};
 
 nixl_status_t nixlGusliEngine::prepXfer(const nixl_xfer_op_t &operation,
 										const nixl_meta_dlist_t &local,
@@ -113,6 +159,7 @@ nixl_status_t nixlGusliEngine::prepXfer(const nixl_xfer_op_t &operation,
 										const std::string &remote_agent,
 										nixlBackendReqH* &handle,
 										const nixl_opt_b_args_t* opt_args) const {
+	handle = nullptr;
 	// Verify params
 	if (remote_agent != local_agent) GUSLI_LOG_RETURN(NIXL_ERR_INVALID_PARAM, "Remote(%s) != localAgent(%s)", local_agent, remote_agent);
 	if (local.getType() != DRAM_SEG) GUSLI_LOG_RETURN(NIXL_ERR_INVALID_PARAM, "Local memory type must be DRAM_SEG, got %d", local.getType());
@@ -127,7 +174,7 @@ nixl_status_t nixlGusliEngine::prepXfer(const nixl_xfer_op_t &operation,
 	if (n_ranges <= 1) {
 		req->io.params.init_1_rng(io.params.op, bdev_descriptor, (uint64_t)remote[i].addr, (uint64_t)local[i].len, (void*)local[i].addr);
 	} else {
-		gusli::io_multi_map_t* mio = (gusli::io_multi_map_t*)nullptr;		// Take ?????
+		gusli::io_multi_map_t* mio = (gusli::io_multi_map_t*)nullptr;		// Take GUSLITODO
 		mio->n_entries = remote.descCount();
 		for (int i = 0; i < n_ranges; i++) {
 			mio->entries[i] = (gusli::io_map_t){

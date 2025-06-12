@@ -17,37 +17,14 @@
 
 #include "backend/backend_plugin.h"
 #include "gusli_backend.h"
-//#include <iostream>
-static const char* PLUGIN_NAME = "GUSLI";
-static const char* PLUGIN_VERSION = "0.1.0";
 
 static nixlBackendEngine* create_gusli_engine(const nixlBackendInitParams* init_params) {
 	return new nixlGusliEngine(init_params);
 }
-
-static void destroy_gusli_engine(nixlBackendEngine *engine) {
-	delete engine;
-}
-
-static const char* get_plugin_name() {
-	return PLUGIN_NAME;
-}
-
-static const char* get_plugin_version() {
-	return PLUGIN_VERSION;
-}
-
-static nixl_b_params_t get_backend_options() {
-	nixl_b_params_t params;
-	return params;
-}
-
-static nixl_mem_list_t get_backend_mems() {
-	nixl_mem_list_t mems;
-	mems.push_back(BLK_SEG);		GUSLITODO
-	return mems;
-}
-
+static void destroy_gusli_engine(nixlBackendEngine *engine) { delete engine; }
+static const char* get_plugin_name() { return "GUSLI"; }	// PLUGIN_NAME
+static const char* get_plugin_version() { return "0.1.0"; }	// PLUGIN_VERSION
+static nixl_b_params_t get_backend_options() { return nixl_b_params_t(); }
 static nixlBackendPlugin plugin = {
 	NIXL_PLUGIN_API_VERSION,
 	create_gusli_engine,
@@ -55,18 +32,12 @@ static nixlBackendPlugin plugin = {
 	get_plugin_name,
 	get_plugin_version,
 	get_backend_options,
-	get_backend_mems
+	__getSupportedGusliMems
 };
 
 #ifdef STATIC_PLUGIN_GUSLI
-	nixlBackendPlugin* createStaticGusliPlugin() {
-		return &plugin;
-	}
+	nixlBackendPlugin* createStaticGusliPlugin() { return &plugin; }
 #else
-	extern "C" NIXL_PLUGIN_EXPORT nixlBackendPlugin* nixl_plugin_init() {
-		return &plugin;
-	}
-	extern "C" NIXL_PLUGIN_EXPORT void nixl_plugin_fini() {
-		// Cleanup any resources if needed
-	}
+	extern "C" NIXL_PLUGIN_EXPORT nixlBackendPlugin* nixl_plugin_init() { return &plugin; }
+	extern "C" NIXL_PLUGIN_EXPORT void nixl_plugin_fini() {}
 #endif

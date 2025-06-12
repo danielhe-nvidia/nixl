@@ -68,8 +68,8 @@ class nixlGusliEngine : public nixlBackendEngine {
 		mems.push_back(BLK_SEG);		GUSLITODO
 		return mems;
 	}
-	nixl_status_t connect(   const std::string &remote_agent) { return NIXL_SUCCESS; }
-	nixl_status_t disconnect(const std::string &remote_agent) { return NIXL_SUCCESS; }
+	nixl_status_t connect(   const std::string &remote_agent);
+	nixl_status_t disconnect(const std::string &remote_agent);
 	nixl_status_t loadLocalMD(nixlBackendMD* input, nixlBackendMD* &output) {
 		output = input;
 		return NIXL_SUCCESS;
@@ -78,22 +78,22 @@ class nixlGusliEngine : public nixlBackendEngine {
 	nixl_status_t registerMem(const nixlBlobDesc &mem,
 								const nixl_mem_t &nixl_mem,
 								nixlBackendMD* &out);
-	nixl_status_t deregisterMem (nixlBackendMD *meta);
+	nixl_status_t deregisterMem(nixlBackendMD*  out);
 
 	nixl_status_t prepXfer( const nixl_xfer_op_t &operation,
 							const nixl_meta_dlist_t &local,
 							const nixl_meta_dlist_t &remote,
 							const std::string &remote_agent,
-							nixlBackendReqH* &handle,
+							nixlBackendReqH* &io_handle,
 							const nixl_opt_b_args_t* opt_args=nullptr) const;
 
 	nixl_status_t postXfer( const nixl_xfer_op_t &operation,
 							const nixl_meta_dlist_t &local,
 							const nixl_meta_dlist_t &remote,
 							const std::string &remote_agent,
-							nixlBackendReqH* &handle,
+							nixlBackendReqH* &io_handle,
 							const nixl_opt_b_args_t* opt_args=nullptr) const;
-	nixl_status_t checkXfer(  nixlBackendReqH* handle) const;
-	nixl_status_t releaseReqH(nixlBackendReqH* handle) const;
+	nixl_status_t checkXfer(  nixlBackendReqH* io_handle) const;
+	nixl_status_t releaseReqH(nixlBackendReqH* io_handle) const;
 };
 #endif

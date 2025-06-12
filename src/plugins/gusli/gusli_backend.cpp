@@ -56,17 +56,27 @@ class nixlGusliMetadata : public nixlBackendMD {
 	~nixlGusliMetadata() {}
 };
 
+/*
 GUSLITODO: open_bdev by uuid, where to take it? which function to call
 GUSLITODO: register memory how, how to ensure io
 GUSLITODO: prepXfer - how to guarantee mmap area
 GUSLITODO: How does NIXL handle multiple block devices served by a single driver?
 GUSLITODO: singleXfer to 1 block device assumption, is it ok?
 GUSLITODO: How to extract the file descriptor of the iostreams so Gusli will flush its logs into the same file descriptor.
-How does NIXL handle multiple block devices served by a single driver?
-gusli::global_clnt_context is the driver, and each block device is specified by its standard 16 bytes uuid (gusli::backend_bdev_id)
+GUSLITODO: How does NIXL handle multiple block devices served by a single driver?
+GUSLITODO: gusli::global_clnt_context is the driver, and each block device is specified by its standard 16 bytes uuid (gusli::backend_bdev_id)
+GUSLITODO: Does NIXL guarantee proper io behavior? Like not closing block devices while ios are in air?
+GUSLITODO: Submit IO buffers which always reside in registered shared memory? if yes then each plugin can skip those checks and make datapath much faster?
+Support a docker build.
+NIXL bench - see how gusli connects there?
+Are there special instructions on how to compile and run a unit-test on a laptop? Specific chapel versions, etc
+/contrib/build.sh --nixl /Users/vladbu/src/nixl
 
+*/
 
-		mem.emplace_back(gusli::io_buffer_t{ .ptr = my_io.io_buf, .byte_len = my_io.buf_size });
+nixl_status_t nixlGusliEngine::connect(   const std::string &remote_agent) { return NIXL_SUCCESS; }
+nixl_status_t nixlGusliEngine::disconnect(const std::string &remote_agent) { return NIXL_SUCCESS; }
+
 
 nixl_status_t nixlGusliEngine::registerMem(const nixlBlobDesc &mem, const nixl_mem_t &nixl_mem, nixlBackendMD* &out) {
 	if (nixl_mem != BLK_SEG)

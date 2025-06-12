@@ -128,12 +128,14 @@ class gtest {		// Gusli tester class
 		nixlAgent agent(agent_name, nixlAgentConfig(true));
 
 		// Set up backend parameters for gusli::global_clnt_context::init_params
+		#define UUID_LOCAL_FILE "050e8400050e8400"
+		#define UUID_NVME__DISK "2b3f28dc2b3f28dc"
 		nixl_b_params_t params;
 		params["log"] = "????";		// GUSLITODO
 		params["client_name"] = agent_name;
-		params["config_file"] = "# version=1, bdevs: UUID, type, attach_op, direct, path, security_cookie\n"
-			"050e8400 f W N ./store.bin  sec=0x3\n"		// Local file in non direct mode
-			"2b3f28dc K X D /dev/nvme0n1 sec=0x7\n";	// NVME in direct mode
+		params["config_file"] = "# version=1, bdevs: UUID-16b, type, attach_op, direct, path, security_cookie\n"
+			UUID_LOCAL_FILE " f W N ./store.bin  sec=0x3\n"		// Local file in non direct mode
+			UUID_NVME__DISK " K X D /dev/nvme0n1 sec=0x7\n";	// NVME in direct mode
 		params["max_num_simultaneous_requests"] = std::to_string(num_transfers);
 
 		// Print test configuration information
@@ -158,7 +160,8 @@ class gtest {		// Gusli tester class
 				return 1;
 			}
 		}
-		//const nixl_status_t status = agent.makeConnection(const std::string &remote_agent, const nixl_opt_args_t* extra_params); GUSLITODO
+		//const nixl_status_t status = agent.makeConnection(const std::string(UUID_LOCAL_FILE), const nixl_opt_args_t* extra_params); GUSLITODO
+		agent.loadRemoteMD // GUSLITODO
 		int bdev_descriptor = 555555; GUSLITODO
 
 		print_segment_title(phase_title("Allocating and initializing buffers"));

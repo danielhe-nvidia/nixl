@@ -32,7 +32,8 @@
 #include <stdexcept>
 #include <cstdio>
 #include <getopt.h>
-
+//sudo apt-get install apt-transport-https ca-certificates curl gnupg lsb-release
+// sudo apt-get install docker; sudo apt install podman-docker
 class gtest {		// Gusli tester class
 	static constexpr const int default_num_transfers = 1024;
 	static constexpr const size_t default_transfer_size = 1 * 512 * 1024; // 512KB
@@ -159,8 +160,6 @@ class gtest {		// Gusli tester class
 				return 1;
 			}
 		}
-		//const nixl_status_t status = agent.makeConnection(const std::string(UUID_LOCAL_FILE), const nixl_opt_args_t* extra_params); GUSLITODO
-		agent.loadRemoteMD // GUSLITODO
 		int bdev_descriptor = 555555; GUSLITODO
 
 		print_segment_title(phase_title("Allocating and initializing buffers"));

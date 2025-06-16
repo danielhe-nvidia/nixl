@@ -17,7 +17,6 @@
 
 #include "backend/backend_plugin.h"
 #include "gusli_backend.h"
-
 static nixlBackendEngine* create_gusli_engine(const nixlBackendInitParams* init_params) {
 	return new nixlGusliEngine(init_params);
 }

@@ -17,29 +17,24 @@
 
 #ifndef __GUSLI_BACKEND_H
 #define __GUSLI_BACKEND_H
-
 #include <nixl.h>
 #include <nixl_types.h>
-#include "common/nixl_log.h"
-#include <unistd.h>
 #include "backend/backend_engine.h"
 #include "gusli_client_api.hpp"
-#include <absl/strings/str_format.h>
 
 static inline nixl_mem_list_t __getSupportedGusliMems(void) {
-	return {BLK_SEG, DRAM_SEG};
-	/*nixl_mem_list_t mems;
-	mems.push_back(BLK_SEG);		// We transfer between RAM and BDEV
-	mems.push_back(DRAM_SEG);
-	return mems;*/
+	return {BLK_SEG, DRAM_SEG};	// Transfer between RAM and BDEV
 }
 
 class nixlGusliEngine : public nixlBackendEngine {
  private:
- 	gusli::global_clnt_context::init_params gp;
-	gusli::global_clnt_context* lib;
-	using open_bdevs_t = std::unordered_map<uint64_t, gusli::bdev_info>;
-	open_bdevs_t bdevs;
+ 	gusli::global_clnt_context::init_params gp;				// Library params
+	gusli::global_clnt_context* lib;						// Library context
+	struct bdev_refcount_t { 								// No support for open/close so use refcount
+		gusli::bdev_info bi;
+		int ref_count;
+	};
+	std::unordered_map<uint64_t, struct bdev_refcount_t> bdevs;	// Hash of open block devices, because open()/close() is exlicit
 	nixl_status_t _open (uint64_t devId);
 	nixl_status_t _close(uint64_t devId);
  public:
@@ -52,7 +47,6 @@ class nixlGusliEngine : public nixlBackendEngine {
 	nixl_mem_list_t getSupportedMems(void) const { return __getSupportedGusliMems(); }
 	nixl_status_t connect(   const std::string &remote_agent) override { return NIXL_SUCCESS; }
 	nixl_status_t disconnect(const std::string &remote_agent) override { return NIXL_SUCCESS; }
-
 	nixl_status_t loadLocalMD(nixlBackendMD* in, nixlBackendMD* &out) { out = in; return NIXL_SUCCESS; }
 	nixl_status_t unloadMD(nixlBackendMD* input) { return NIXL_SUCCESS; }
 	nixl_status_t registerMem(const nixlBlobDesc &mem,

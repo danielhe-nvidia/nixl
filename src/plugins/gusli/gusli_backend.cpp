@@ -72,12 +72,12 @@ nixl_status_t nixlGusliEngine::_open(uint64_t devId) {
 		gusli::backend_bdev_id bdev; bdev.set_from(devId);
 		const gusli::connect_rv rv = lib->bdev_connect(bdev);
 		if (rv != gusli::connect_rv::C_OK)
-			__LOG_RETERR(__err_conv(rv), "connect uuid=%s rv=%d", bdev.uuid, (int)rv);
+			__LOG_RETERR(__err_conv(rv), "connect uuid=%.16s rv=%d", bdev.uuid, (int)rv);
 		struct bdev_refcount_t v;
 		v.ref_count = 1;
 		const gusli::bdev_info& i = v.bi;
 		lib->bdev_get_info(bdev, &v.bi);
-		__LOG_DBG("Open: {bdev uuid=%s, fd=%d name=%s, block_size=%u[B], #blocks=0x%lx}", bdev.uuid, i.bdev_descriptor, i.name, i.block_size, i.num_total_blocks);
+		__LOG_DBG("Open: {bdev uuid=%.16s, fd=%d name=%s, block_size=%u[B], #blocks=0x%lx}", bdev.uuid, i.bdev_descriptor, i.name, i.block_size, i.num_total_blocks);
 		bdevs[devId] = v;
 	}
 	return NIXL_SUCCESS;
@@ -98,8 +98,8 @@ nixl_status_t nixlGusliEngine::_close(uint64_t devId) {
 		gusli::backend_bdev_id bdev; bdev.set_from(devId);
 		const gusli::connect_rv rv = lib->bdev_disconnect(bdev);
 		if (rv != gusli::connect_rv::C_OK)
-			__LOG_RETERR(__err_conv(rv), "disconnect uuid=%s rv=%d", bdev.uuid, (int)rv);
-		__LOG_DBG("Close: {bdev uuid=%s, fd=%d name=%s, block_size=%u[B], #blocks=0x%lx}", bdev.uuid, i.bdev_descriptor, i.name, i.block_size, i.num_total_blocks);
+			__LOG_RETERR(__err_conv(rv), "disconnect uuid=%.16s rv=%d", bdev.uuid, (int)rv);
+		__LOG_DBG("Close: {bdev uuid=%.16s, fd=%d name=%s, block_size=%u[B], #blocks=0x%lx}", bdev.uuid, i.bdev_descriptor, i.name, i.block_size, i.num_total_blocks);
 		bdevs.erase(devId);
 	}
 	return NIXL_SUCCESS;

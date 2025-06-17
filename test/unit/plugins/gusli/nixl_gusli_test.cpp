@@ -20,8 +20,6 @@
 #include <stdlib.h>
 #include <absl/strings/str_format.h>
 #include "nixl.h"
-//#include "nixl_params.h"
-//#include "nixl_descriptors.h"
 #include "common/nixl_time.h"
 #include <getopt.h>
 
@@ -42,9 +40,11 @@ class gtest {		// Gusli tester class
 	static constexpr const char* line_str = "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n";
 	int num_transfers;
 	size_t transfer_size;
+	const size_t bdev_byte_offset = (1UL << 20);	// Write at offset 1[MB] in block device
 	long page_size;
 	long sg_buf_size;			// Array of pages for describing the list of io descriptors in registred memory
 	void* ptr;					// Registered mem RAM buffer for ios
+	nixlXferReqH* treq = nullptr;			// io request
 
 	static std::string center_str(const std::string& str) { return std::string((line_width - str.length()) / 2, ' ') + str; }
 	static bool test_pattern_do(void* buffer, size_t size, const char* action) {
@@ -120,17 +120,47 @@ class gtest {		// Gusli tester class
 		if (ptr) free(ptr);
 	}
 
-	int run_write_read_verify(void) {
-		nixlAgent agent(agent_name, nixlAgentConfig(true));
-		// Set up backend parameters for gusli::global_clnt_context::init_params
-		#define UUID_LOCAL_FILE 11
-		#define UUID_NVME__DISK 17
+	nixl_b_params_t gen_gusli_plugin_params(void) const {	// Set up backend parameters for gusli::global_clnt_context::init_params
+		#define UUID_LOCAL_FILE_0 11
+		#define UUID_LOCAL_FILE_1 12
+		#define UUID_NVME_DISK__0 17
 		nixl_b_params_t params;
 		params["client_name"] = agent_name;
 		params["config_file"] = "# version=1, bdevs: UUID-16b, type, attach_op, direct, path, security_cookie\n"
-			__stringify(UUID_LOCAL_FILE) " f W N ./store.bin  sec=0x3\n"		// Local file in non direct mode
-			__stringify(UUID_NVME__DISK) " K X D /dev/nvme0n1 sec=0x7\n";	// NVME in direct mode
+			__stringify(UUID_LOCAL_FILE_0) " f W N ./store0.bin sec=0x3\n"		// Local file in non direct mode
+			__stringify(UUID_LOCAL_FILE_1) " f W N ./store1.bin sec=0x3\n"		// Local file in non direct mode
+			__stringify(UUID_NVME_DISK__0) " K X D /dev/nvme0n1 sec=0x7\n";	// NVME in direct mode
 		params["max_num_simultaneous_requests"] = std::to_string(256);
+		return params;
+	}
+
+	#define QUIT_ON_ERR(msg, status) { if (status < NIXL_SUCCESS) { err_log << "Error: " << msg << nixlEnumStrings::statusStr(status) << std::endl; if (treq) agent.releaseXferReq(treq); return -__LINE__; } } while (0)
+	int register_bufs_on_multi_bdev(nixlAgent& agent, bool do_reg) {	// Register the large IO buffer + additional sg on 2 bdevs
+		const size_t n_total_mapped_bytes = (num_transfers * transfer_size);
+		const char* action_str = (do_reg ? "R" : "Unr");
+		nixl_reg_dlist_t dram_reg(DRAM_SEG), bdev_reg(BLK_SEG);
+		int bdevs[2] = {UUID_LOCAL_FILE_0, UUID_LOCAL_FILE_1};
+		nixlBlobDesc d;
+		nixl_status_t status;
+		d.devId = 0;
+		d.len = n_total_mapped_bytes + sg_buf_size;
+		d.addr = (uintptr_t)ptr;   dram_reg.addDesc(d);
+		d.addr = bdev_byte_offset; bdev_reg.addDesc(d);
+		for (int i = 0; i < 2; i++ ) {
+			dram_reg[0].devId = bdev_reg[0].devId = bdevs[i];
+			status = (do_reg ? agent.registerMem(dram_reg) : agent.deregisterMem(dram_reg));
+			QUIT_ON_ERR(absl::StrFormat("Failed bdev=%u %eg=%s, rv=", bdevs[i], action_str, nixlEnumStrings::memTypeStr(dram_reg.getType())), status);
+			progress_bar(i*0.5f + 0.25f);
+			status = (do_reg ? agent.registerMem(bdev_reg) : agent.deregisterMem(bdev_reg));
+			QUIT_ON_ERR(absl::StrFormat("Failed bdev=%u %eg=%s, rv=", bdevs[i], action_str, nixlEnumStrings::memTypeStr(bdev_reg.getType())), status);
+			progress_bar(i*0.5f + 0.50f);
+		}
+		return 0;
+	}
+
+	int run_write_read_verify(void) {
+		nixlAgent agent(agent_name, nixlAgentConfig(true));
+		nixl_b_params_t params = gen_gusli_plugin_params();
 
 		// Print test configuration information
 		const size_t n_total_mapped_bytes = (num_transfers * transfer_size);
@@ -142,21 +172,18 @@ class gtest {		// Gusli tester class
 		out_log << absl::StrFormat("- Backend: GUSLI, Direct IO enabled\n") << line_str;
 
 		// Create GUSLI backend first - before allocating any resources
-		#define QUIT_ON_ERR(msg, status) { if (status < NIXL_SUCCESS) { err_log << "Error: " << msg << nixlEnumStrings::statusStr(status) << std::endl; if (treq) agent.releaseXferReq(treq); return -__LINE__; } } while (0)
 		nixlBackendH* n_backend = nullptr;		// Backend gusli plugin
-		nixlXferReqH* treq = nullptr;			// io request
 		nixl_status_t status;
 		status = agent.createBackend("GUSLI", params, n_backend);
 		QUIT_ON_ERR("Backend Creation Failed: ", status);
 
-		print_segment_title(phase_title("Allocating buffers, bdev " + UUID_LOCAL_FILE));
+		print_segment_title(phase_title("Allocating buffers, bdev " + UUID_LOCAL_FILE_0));
 		if (posix_memalign(&ptr, page_size, n_total_mapped_bytes + sg_buf_size) != 0)
 			QUIT_ON_ERR("DRAM allocation failed", NIXL_ERR_NOT_SUPPORTED);
 		nixl_xfer_dlist_t bdev_io_src(DRAM_SEG), bdev_io_dst(BLK_SEG);
-		const size_t bdev_byte_offset = (1UL << 20);	// Write at offset 1[MB] in block device
 		{
 			nixlBlobDesc d;
-			d.devId = UUID_LOCAL_FILE;
+			d.devId = UUID_LOCAL_FILE_0;
 			// First entry is dummy, with enough space for scatter gather
 			d.len = sg_buf_size;
 			d.addr = (uintptr_t)((u_int64_t)ptr + n_total_mapped_bytes);
@@ -257,10 +284,14 @@ class gtest {		// Gusli tester class
 			status = agent.deregisterMem(bdev_reg);
 			QUIT_ON_ERR(absl::StrFormat("Failed de-reg=%s, rv=", nixlEnumStrings::memTypeStr(bdev_reg.getType())), status);
 		}
-
-		print_segment_title("TEST SUMMARY");
+		print_segment_title("TEST write-read summary");
 		out_log << "Total time: " << format_time(total_time) << std::endl;
 		out_log << "Total data: " << std::fixed << std::setprecision(2) << total_data_gb << "[GB]" << line_str;
+
+
+		print_segment_title("TEST 1-transfer on 2 bdevs");
+		if (register_bufs_on_multi_bdev(agent, true ) < 0) return -__LINE__;
+		if (register_bufs_on_multi_bdev(agent, false) < 0) return -__LINE__;
 		return 0;
 	}
 };

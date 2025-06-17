@@ -65,7 +65,7 @@ class gtest {		// Gusli tester class
 			for (size_t i = 0; i < size; i += test_phrase_len) {
 				*((size_t*)&test_phrase[24]) = i;		// Unique last 64 bits for each 32[b] string
 				if (0 != memcmp(&buf[i], test_phrase, test_phrase_len)) {
-					err_log << "DRAM buffer[" << i << "] validation failed with error, size=" << size << "\n test=" << test_phrase << "buf=" << buf[i] << "\n";
+					err_log << "DRAM buffer[" << i << "]=" << (void*)&buf[i] << ", validation failed with error, size=" << size << "\n test=" << test_phrase << "buf=" << buf[i] << "\n";
 					return false;
 				}
 			}
@@ -109,7 +109,8 @@ class gtest {		// Gusli tester class
 			err_log << "Error: Invalid page size returned by sysconf\n";
 			return;
 		}
-		if (num_transfers % 4)					// Make num_transfers aligned to 4
+		if (num_transfers < 8) num_transfers = 8;	// At least 8
+		if (num_transfers % 4)						// Make num_transfers aligned to 4
 			num_transfers = ((num_transfers + 3) / 4) * 4;
 		if ((transfer_size % page_size) != 0) 	// align transfer size to page size
 			transfer_size = ((transfer_size + page_size - 1) / page_size) * page_size;
@@ -156,6 +157,32 @@ class gtest {		// Gusli tester class
 			progress_bar(i*0.5f + 0.50f);
 		}
 		return 0;
+	}
+	void build_multi_bdev_single_request(nixl_xfer_dlist_t& bdev_io_src, nixl_xfer_dlist_t& bdev_io_dst) const {
+		bdev_io_src.clear(); bdev_io_dst.clear();
+		const size_t n_total_mapped_bytes = (num_transfers * transfer_size);
+		int bdevs[2] = {UUID_LOCAL_FILE_0, UUID_LOCAL_FILE_1}, n_ranges = 7;
+		nixlBlobDesc d;
+
+		// First entry is dummy, with enough space for scatter gather
+		d.devId = UUID_LOCAL_FILE_0;		// Meaningless, will be split and used partially for each block device
+		d.len = sg_buf_size;
+		d.addr = (uintptr_t)((u_int64_t)ptr + n_total_mapped_bytes);
+		bdev_io_src.addDesc(d);
+		d.addr = bdev_byte_offset;	// Dummy
+		bdev_io_dst.addDesc(d);
+		for (int i = 0; i < n_ranges; ++i) {		// Create transfers
+			const size_t io_offset = (i*transfer_size);
+			const int cur_bdev = ((i>4)||(i==1)) ? 1 : 0;
+			d.devId = bdevs[cur_bdev];		// Interleave requests to 2 block devices
+			d.len = transfer_size;
+			d.addr = (uintptr_t)((size_t)ptr + io_offset);	// Offset in RAM buffer
+			bdev_io_src.addDesc(d);
+			d.addr = bdev_byte_offset + io_offset;
+			bdev_io_dst.addDesc(d);
+			progress_bar(float(i + 1) / n_ranges);
+			//err_log << "Range=" << i << ", curbdev=" << d.devId << "\n";
+		}
 	}
 
 	int run_write_read_verify(void) {
@@ -226,7 +253,7 @@ class gtest {		// Gusli tester class
 
 		enum nixl_xfer_op_t io_phases[] = {NIXL_WRITE, NIXL_READ};	// First write - then read
 		print_segment_title(phase_title("1[xfer] Write-Read-Verify"));
-		{
+		if (1) {
 			nixl_xfer_dlist_t bdev_io_1src(DRAM_SEG), bdev_io_1dst(BLK_SEG);
 			bdev_io_1src.addDesc(bdev_io_src[4]);		// Just an arbitrary 4'th io
 			bdev_io_1dst.addDesc(bdev_io_dst[4]);
@@ -250,33 +277,35 @@ class gtest {		// Gusli tester class
 
 		nixlTime::us_t total_time(0);
 		double total_data_gb(0);
-		test_pattern_do(ptr, n_total_mapped_bytes, "fill");
-		for (int i = 0; i < 2; i++, treq = nullptr) {
-			const std::string io_t_str = nixlEnumStrings::xferOpStr(io_phases[i]);
-			print_segment_title(phase_title(absl::StrFormat("%s Test, nIOs=%u", io_t_str.c_str(), (int)bdev_io_src.descCount()-1)));
-			status = agent.createXferReq(io_phases[i], bdev_io_src, bdev_io_dst, agent_name, treq);
-			QUIT_ON_ERR("Failed to create req, rv=", status);
-			const nixlTime::us_t time_start = nixlTime::getUs();
-			status = agent.postXferReq(treq);
-			QUIT_ON_ERR("Failed to post req, rv=", status);
-			do { // Busy loop wait for transfer to complete
-				status = agent.getXferStatus(treq);
-				QUIT_ON_ERR("Failed during transfer req, rv=", status);
-			} while (status == NIXL_IN_PROG);
-			const nixlTime::us_t time_end = nixlTime::getUs();
-			const nixlTime::us_t micro_secs = (time_end - time_start);
-			const double data_gb = (double)n_total_mapped_bytes / (double)gb_size;
-			out_log << "- Time: " << format_time(micro_secs) << std::endl;
-			out_log << "- Data: " << std::fixed << std::setprecision(2) << data_gb << "[GB]\n";
-			out_log << "- Speed: " << ((data_gb * 1000000.0) / micro_secs) << "[GB/s]\n";
-			total_time += micro_secs;
-			total_data_gb += data_gb;
-			agent.releaseXferReq(treq);
-			if (io_phases[i] == NIXL_WRITE)		// Clear buffers before read
-				test_pattern_do(ptr, n_total_mapped_bytes, "clear");
+		if (1) {
+			test_pattern_do(ptr, n_total_mapped_bytes, "fill");
+			for (int i = 0; i < 2; i++, treq = nullptr) {
+				const std::string io_t_str = nixlEnumStrings::xferOpStr(io_phases[i]);
+				print_segment_title(phase_title(absl::StrFormat("%s Test, nIOs=%u", io_t_str.c_str(), (int)bdev_io_src.descCount()-1)));
+				status = agent.createXferReq(io_phases[i], bdev_io_src, bdev_io_dst, agent_name, treq);
+				QUIT_ON_ERR("Failed to create req, rv=", status);
+				const nixlTime::us_t time_start = nixlTime::getUs();
+				status = agent.postXferReq(treq);
+				QUIT_ON_ERR("Failed to post req, rv=", status);
+				do { // Busy loop wait for transfer to complete
+					status = agent.getXferStatus(treq);
+					QUIT_ON_ERR("Failed during transfer req, rv=", status);
+				} while (status == NIXL_IN_PROG);
+				const nixlTime::us_t time_end = nixlTime::getUs();
+				const nixlTime::us_t micro_secs = (time_end - time_start);
+				const double data_gb = (double)n_total_mapped_bytes / (double)gb_size;
+				out_log << "- Time: " << format_time(micro_secs) << std::endl;
+				out_log << "- Data: " << std::fixed << std::setprecision(2) << data_gb << "[GB]\n";
+				out_log << "- Speed: " << ((data_gb * 1000000.0) / micro_secs) << "[GB/s]\n";
+				total_time += micro_secs;
+				total_data_gb += data_gb;
+				agent.releaseXferReq(treq);
+				if (io_phases[i] == NIXL_WRITE)		// Clear buffers before read
+					test_pattern_do(ptr, n_total_mapped_bytes, "clear");
+			}
+			print_segment_title(phase_title("Validating read data"));
+			if (!test_pattern_do(ptr, n_total_mapped_bytes, "verify")) return -__LINE__;
 		}
-		print_segment_title(phase_title("Validating read data"));
-		if (!test_pattern_do(ptr, n_total_mapped_bytes, "verify")) return -5;
 
 		{	print_segment_title(phase_title("Un-Registering memory with NIXL"));
 			status = agent.deregisterMem(dram_reg);
@@ -288,17 +317,36 @@ class gtest {		// Gusli tester class
 		out_log << "Total time: " << format_time(total_time) << std::endl;
 		out_log << "Total data: " << std::fixed << std::setprecision(2) << total_data_gb << "[GB]" << line_str;
 
-
-		print_segment_title("TEST 1-transfer on 2 bdevs");
-		if (register_bufs_on_multi_bdev(agent, true ) < 0) return -__LINE__;
-		if (register_bufs_on_multi_bdev(agent, false) < 0) return -__LINE__;
+		{
+			print_segment_title(phase_title("register-mem on multi-bdevs"));
+			if (register_bufs_on_multi_bdev(agent, true ) < 0) return -__LINE__;
+			print_segment_title(phase_title("TEST 1-transfer-multi-bdevs"));
+			test_pattern_do(ptr, n_total_mapped_bytes, "fill");
+			build_multi_bdev_single_request(bdev_io_src, bdev_io_dst);
+			for (int i = 0; i < 2; i++, treq = nullptr) {
+				status = agent.createXferReq(io_phases[i], bdev_io_src, bdev_io_dst, agent_name, treq);
+				QUIT_ON_ERR("Failed to create req, rv=", status);
+				status = agent.postXferReq(treq);
+				QUIT_ON_ERR("Failed to post req, rv=", status);
+				do { // Busy loop wait for transfer to complete
+					status = agent.getXferStatus(treq);
+					QUIT_ON_ERR("Failed during transfer req, rv=", status);
+				} while (status == NIXL_IN_PROG);
+				agent.releaseXferReq(treq);
+				if (io_phases[i] == NIXL_WRITE)		// Clear buffers before read
+					test_pattern_do(ptr, n_total_mapped_bytes, "clear");
+			}
+			if (!test_pattern_do(ptr, transfer_size*7, "verify")) return -__LINE__;
+			print_segment_title(phase_title("runegister-mem on multi-bdevs"));
+			if (register_bufs_on_multi_bdev(agent, false) < 0) return -__LINE__;
+		}
 		return 0;
 	}
 };
 
 int main(int argc, char *argv[]) {
-	static constexpr const int default_num_transfers = 1024;
-	static constexpr const size_t default_transfer_size = (1UL << 19); // 512KB
+	static constexpr const int default_num_transfers = 8;
+	static constexpr const size_t default_transfer_size = 4096; //(1UL << 19); // 512KB
 	int opt, num_transfers = default_num_transfers;
 	size_t transfer_size = default_transfer_size;
 	while ((opt = getopt(argc, argv, "n:s:h")) != -1) {

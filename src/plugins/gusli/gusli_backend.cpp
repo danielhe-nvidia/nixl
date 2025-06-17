@@ -18,8 +18,8 @@
 #include "common/nixl_log.h"
 #include <absl/strings/str_format.h>
 #define __LOG_ERR(format, ...) { NIXL_ERROR << absl::StrFormat("GUSLI: %s() %s[%d]" format, __PRETTY_FUNCTION__, __FILE__, __LINE__, ##__VA_ARGS__); } while (0)
-#define __LOG_DBG(format, ...) { NIXL_DEBUG << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } while (0)
-#define __LOG_TRC(format, ...) { NIXL_TRACE << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } while (0)
+#define __LOG_DBG(format, ...) { NIXL_ERROR << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } while (0)
+#define __LOG_TRC(format, ...) { NIXL_ERROR << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } while (0)
 #define __LOG_RETERR(rv, format, ...) do { \
 	__LOG_ERR("error=%d, " format, (int)rv, ##__VA_ARGS__); \
 	return rv; \
@@ -214,6 +214,7 @@ nixl_status_t nixlGusliEngine::prepXfer(const nixl_xfer_op_t &op,
 	const int id = v.bi.bdev_descriptor;
 	if (n_ranges == 1) {
 		req->io.params.init_1_rng(req->io.params.op, id, (uint64_t)remote[0].addr, (uint64_t)local[0].len, (void*)local[0].addr);
+		__LOG_TRC("RNG1: dev=%d, %p, 0x%lx[b], lba=0x%lx", remote[0].devId, (void*)local[0].addr, (uint64_t)local[0].len, (uint64_t)remote[0].addr);
 	} else {
 		gusli::io_multi_map_t* mio = (gusli::io_multi_map_t*)local[0].addr;	// Allocate scatter gather in the first entry
 		mio->n_entries = n_ranges - 1;		// First entry is the scatter gather
@@ -225,6 +226,7 @@ nixl_status_t nixlGusliEngine::prepXfer(const nixl_xfer_op_t &op,
 			mio->entries[i-1] = (gusli::io_map_t){
 				.data = {.ptr = (void*)local[i].addr, .byte_len = (uint64_t)local[i].len, },
 				.offset_lba_bytes = (uint64_t)remote[i].addr };
+			__LOG_TRC("RNG: dev=%d, %p, 0x%lx[b], lba=0x%lx", remote[i].devId, (void*)local[i].addr, (uint64_t)local[i].len, remote[i].addr);
 		}
 		req->io.params.init_multi(req->io.params.op, id, *mio);
 	}

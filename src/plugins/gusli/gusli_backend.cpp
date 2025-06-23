@@ -18,8 +18,8 @@
 #include "common/nixl_log.h"
 #include <absl/strings/str_format.h>
 #define __LOG_ERR(format, ...) { NIXL_ERROR << absl::StrFormat("GUSLI: %s() %s[%d]" format, __PRETTY_FUNCTION__, __FILE__, __LINE__, ##__VA_ARGS__); } while (0)
-#define __LOG_DBG(format, ...) { NIXL_ERROR << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } while (0)
-#define __LOG_TRC(format, ...) { NIXL_ERROR << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } while (0)
+#define __LOG_DBG(format, ...) { NIXL_DEBUG << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } while (0)
+#define __LOG_TRC(format, ...) { NIXL_TRACE << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } while (0)
 #define __LOG_RETERR(rv, format, ...) do { \
 	__LOG_ERR("error=%d, " format, (int)rv, ##__VA_ARGS__); \
 	return rv; \

@@ -28,14 +28,14 @@ static inline nixl_mem_list_t __getSupportedGusliMems(void) {
 
 class nixlGusliEngine : public nixlBackendEngine {
  private:
- 	gusli::global_clnt_context::init_params gp;				// Library params
+	gusli::global_clnt_context::init_params gp;				// Library params
 	gusli::global_clnt_context* lib;						// Library context
 	struct bdev_refcount_t { 								// No support for open/close so use refcount
 		gusli::bdev_info bi;
 		int ref_count;
 	};
-	std::unordered_map<uint64_t, struct bdev_refcount_t> bdevs;	// Hash of open block devices, because open()/close() is exlicit
-	nixl_status_t _open (uint64_t devId);
+	std::unordered_map<uint64_t, struct bdev_refcount_t> bdevs;	// Hash of open block devices
+	nixl_status_t _open (uint64_t devId);						// open()/close() called implicitly by *registerMem()
 	nixl_status_t _close(uint64_t devId);
 	int32_t get_gid_of_bdev(uint64_t devId) const {
 		const struct bdev_refcount_t& v = bdevs.find(devId)->second;	// Already open

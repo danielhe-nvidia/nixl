@@ -81,7 +81,7 @@ class gtest {		// Gusli tester class
 	size_t transfer_size, n_total_mapped_bytes;
 	const size_t bdev_byte_offset = (1UL << 20);	// Write at offset 1[MB] in block device
 	long page_size;
-	long sg_buf_size;			// Array of pages for describing the list of io descriptors in registred memory
+	long sg_buf_size;			// Array of pages for describing the list of io descriptors in registered memory
 	void* ptr;					// Registered mem RAM buffer for ios
 	nixlXferReqH* treq = nullptr;			// io request
 	test_pattern_t test_pattern;
@@ -92,7 +92,7 @@ class gtest {		// Gusli tester class
 	}
 
 	static void progress_bar(float p /* [0..1]*/) {
-		if (verbose) return;						// Progres bar may ibsucre user prints
+		if (verbose) return;						// Progress bar may ibsucre user prints
 		static constexpr const int progress_bar_width = (line_width - 2); // -2 for the brackets
 		out_log << "[";
 		int i;
@@ -136,7 +136,25 @@ class gtest {		// Gusli tester class
 		if (ptr) free(ptr);
 	}
 
-	nixl_b_params_t gen_gusli_plugin_params(void) const {	// Set up backend parameters for gusli::global_clnt_context::init_params
+	nixl_b_params_t gen_gusli_plugin_params(const nixlAgent& agent) const {	// Set up backend parameters for gusli::global_clnt_context::init_params
+		// Get default params / supported mem
+		nixl_b_params_t params;
+		nixl_mem_list_t mems1;
+		nixl_status_t ret1 = agent.getPluginParams("GUSLI", mems1, params);
+		assert(ret1 == NIXL_SUCCESS);
+		if (verbose) {
+			out_log << absl::StrFormat("Default Plugin params:\n");
+			for (const auto& q : params) {
+				out_log << "key=" << q.first << ", val=" << q.second << "\n";
+			}
+			out_log << absl::StrFormat("Plugin supported mem:\n");
+			for (const auto& q : mems1) {
+				out_log << nixlEnumStrings::memTypeStr(q) << ",";
+			}
+			out_log << "\n";
+		}
+
+		// Add gusli specific params
 		#ifndef __stringify
 			#define __stringify_1(x...)	#x
 			#define __stringify(x...)	__stringify_1(x)
@@ -144,7 +162,6 @@ class gtest {		// Gusli tester class
 		#define UUID_LOCAL_FILE_0 11		// Just some numbers
 		#define UUID_K_DEV_ZERO_1 14
 		#define UUID_NVME_DISK__0 27
-		nixl_b_params_t params;
 		params["client_name"] = agent_name;
 		params["config_file"] = "# version=1, bdevs: UUID-16b, type, attach_op, direct, path, security_cookie\n"
 			__stringify(UUID_LOCAL_FILE_0) " f W N ./store0.bin sec=0x3\n"		// Local file in non direct mode
@@ -244,10 +261,10 @@ class gtest {		// Gusli tester class
 
 	int run_write_read_verify(void) {
 		nixlAgent agent(agent_name, nixlAgentConfig(true));
-		nixl_b_params_t params = gen_gusli_plugin_params();
+		print_segment_title("NIXL STORAGE TEST STARTING (GUSLI PLUGIN)");
+		nixl_b_params_t params = gen_gusli_plugin_params(agent);
 
 		// Print test configuration information
-		print_segment_title("NIXL STORAGE TEST STARTING (GUSLI PLUGIN)");
 		out_log << absl::StrFormat("Configuration:\n");
 		out_log << absl::StrFormat("- Number of transfers=%d\n", num_transfers);
 		out_log << absl::StrFormat("- Transfer=%zu[KB], sg=%zu[KB]\n", (transfer_size >> 10), (sg_buf_size >> 10));
@@ -276,7 +293,7 @@ class gtest {		// Gusli tester class
 			d.len = sg_buf_size;
 			d.addr = (uintptr_t)((size_t)ptr + n_total_mapped_bytes); dram_reg.addDesc(d);
 			// Just for debug, register in 4 quarters, can register as 1 buffer as well
-			d.len = n_total_mapped_bytes/4;	// Security reason: Enforces all IO's within registerd memory. Not needed internally by the plugin
+			d.len = n_total_mapped_bytes/4;	// Security reason: Enforces all IO's within registered memory. Not needed internally by the plugin
 			for (int i = 0; i < 4; i++ ) {
 				d.addr = bdev_byte_offset + i*d.len; bdev_reg.addDesc(d);
 			}

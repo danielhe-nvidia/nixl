@@ -301,7 +301,7 @@ nixl_status_t nixlGusliEngine::prepXfer(const nixl_xfer_op_t &op,
 			__LOG_RETERR(NIXL_ERR_INVALID_PARAM, "missing SGL, or SGL too small 0x%lx[b]", local[0].len);
 		}
 	} else {
-		unsigned i = (has_sgl_mem ? 1 : 0);		// If supplied sgl, cant use it for now, just ignore it
+		unsigned i = (has_sgl_mem ? 1 : 0);		// If supplied sgl, can't use it for now, just ignore it
 		__LOG_IO(req, "_Compound IO, 1-bdev=%d, has_sgl=%d, n_sub_ios=%u", entire_io_1_bdev, has_sgl_mem, (n_ranges - i));
 		for (; i < n_ranges; i++)
 			req->add_sub_io(op, get_gid_of_bdev(remote[i].devId), local[i], remote[i]);

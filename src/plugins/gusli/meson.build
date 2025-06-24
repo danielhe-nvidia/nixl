@@ -22,18 +22,17 @@ gusli_dep = declare_dependency(
 
 # Get Abseil dependencies
 absl_log_dep = dependency('absl_log', required: true)
+cpp_sources = ['gusli_plugin.cpp', 'gusli_backend.cpp', 'gusli_backend.h']
 
 if 'GUSLI' in static_plugins
-  gusli_backend_lib = static_library('GUSLI',
-                    'gusli_plugin.cpp', 'gusli_backend.cpp', 'gusli_backend.h',
+  gusli_backend_lib = static_library('GUSLI', cpp_sources,
                     dependencies: [nixl_infra, gusli_dep, absl_log_dep],
                     include_directories: [nixl_inc_dirs, utils_inc_dirs],
                     install: false,
                     cpp_args : compile_flags,
                     name_prefix: 'libplugin_')  # Custom prefix for plugin libraries
 else
-  gusli_backend_lib = shared_library('GUSLI',
-                    'gusli_plugin.cpp', 'gusli_backend.cpp', 'gusli_backend.h',
+  gusli_backend_lib = shared_library('GUSLI', cpp_sources,
                     dependencies: [nixl_infra, gusli_dep, absl_log_dep],
                     include_directories: [nixl_inc_dirs, utils_inc_dirs],
                     install: true,

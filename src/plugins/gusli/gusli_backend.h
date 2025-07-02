@@ -27,19 +27,6 @@ static inline nixl_mem_list_t __getSupportedGusliMems(void) {
 }
 
 class nixlGusliEngine : public nixlBackendEngine {
- private:
-	gusli::global_clnt_context* lib;						// Library context
-	struct bdevRefcountT { 								// No support for open/close so use refcount
-		gusli::bdev_info bi;
-		int ref_count;
-	};
-	std::unordered_map<uint64_t, bdevRefcountT> bdevs;	// Hash of open block devices
-	[[nodiscard]] nixl_status_t _open (uint64_t devId);						// open()/close() called implicitly by *registerMem()
-	[[nodiscard]] nixl_status_t _close(uint64_t devId);
-	[[nodiscard]] int32_t getGidOfBDev(uint64_t devId) const {
-		const struct bdevRefcountT& v = bdevs.find(devId)->second;	// Already open
-		return v.bi.bdev_descriptor;
-	}
  public:
 	nixlGusliEngine(const nixlBackendInitParams* init_params);
 	~nixlGusliEngine();
@@ -72,5 +59,18 @@ class nixlGusliEngine : public nixlBackendEngine {
 							const nixl_opt_b_args_t* opt_args=nullptr) const override;
 	[[nodiscard]] nixl_status_t checkXfer(  nixlBackendReqH* io_handle) const override;
 	[[nodiscard]] nixl_status_t releaseReqH(nixlBackendReqH* io_handle) const override;
+ private:
+	gusli::global_clnt_context* lib_;						// Library context
+	struct bdevRefcountT { 								// No support for open/close so use refcount
+		gusli::bdev_info bi;
+		int ref_count;
+	};
+	std::unordered_map<uint64_t, bdevRefcountT> bdevs_;	// Hash of open block devices
+	[[nodiscard]] nixl_status_t bdevOpen( uint64_t devId);						// open()/close() called implicitly by *registerMem()
+	[[nodiscard]] nixl_status_t bdevClose(uint64_t devId);
+	[[nodiscard]] int32_t getGidOfBDev(uint64_t devId) const {
+		const bdevRefcountT& v = bdevs_.find(devId)->second;	// Already open
+		return v.bi.bdev_descriptor;
+	}
 };
 #endif

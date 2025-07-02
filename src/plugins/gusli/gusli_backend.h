@@ -35,9 +35,9 @@ class nixlGusliEngine : public nixlBackendEngine {
 		int ref_count;
 	};
 	std::unordered_map<uint64_t, struct bdev_refcount_t> bdevs;	// Hash of open block devices
-	nixl_status_t _open (uint64_t devId);						// open()/close() called implicitly by *registerMem()
-	nixl_status_t _close(uint64_t devId);
-	int32_t get_gid_of_bdev(uint64_t devId) const {
+	[[nodiscard]] nixl_status_t _open (uint64_t devId);						// open()/close() called implicitly by *registerMem()
+	[[nodiscard]] nixl_status_t _close(uint64_t devId);
+	[[nodiscard]] int32_t get_gid_of_bdev(uint64_t devId) const {
 		const struct bdev_refcount_t& v = bdevs.find(devId)->second;	// Already open
 		return v.bi.bdev_descriptor;
 	}
@@ -53,25 +53,25 @@ class nixlGusliEngine : public nixlBackendEngine {
 	nixl_status_t disconnect(const std::string &remote_agent) override { return NIXL_SUCCESS; }
 	nixl_status_t loadLocalMD(nixlBackendMD* in, nixlBackendMD* &out) { out = in; return NIXL_SUCCESS; }
 	nixl_status_t unloadMD(nixlBackendMD* input) { return NIXL_SUCCESS; }
-	nixl_status_t registerMem(const nixlBlobDesc &mem,
+	[[nodiscard]] nixl_status_t registerMem(const nixlBlobDesc &mem,
 								const nixl_mem_t &nixl_mem,
 								nixlBackendMD* &out);
-	nixl_status_t deregisterMem(nixlBackendMD*  out);
+	[[nodiscard]] nixl_status_t deregisterMem(nixlBackendMD*  out);
 
-	nixl_status_t prepXfer( const nixl_xfer_op_t &operation,
+	[[nodiscard]] nixl_status_t prepXfer( const nixl_xfer_op_t &operation,
 							const nixl_meta_dlist_t &local,
 							const nixl_meta_dlist_t &remote,
 							const std::string &remote_agent,
 							nixlBackendReqH* &io_handle,
 							const nixl_opt_b_args_t* opt_args=nullptr) const;
 
-	nixl_status_t postXfer( const nixl_xfer_op_t &operation,
+	[[nodiscard]] nixl_status_t postXfer( const nixl_xfer_op_t &operation,
 							const nixl_meta_dlist_t &local,
 							const nixl_meta_dlist_t &remote,
 							const std::string &remote_agent,
 							nixlBackendReqH* &io_handle,
 							const nixl_opt_b_args_t* opt_args=nullptr) const;
-	nixl_status_t checkXfer(  nixlBackendReqH* io_handle) const;
-	nixl_status_t releaseReqH(nixlBackendReqH* io_handle) const;
+	[[nodiscard]] nixl_status_t checkXfer(  nixlBackendReqH* io_handle) const;
+	[[nodiscard]] nixl_status_t releaseReqH(nixlBackendReqH* io_handle) const;
 };
 #endif

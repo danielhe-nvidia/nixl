@@ -17,6 +17,7 @@
 
 #include "backend/backend_plugin.h"
 #include "gusli_backend.h"
+
 namespace {
 [[nodiscard]] nixlBackendEngine* create_gusli_engine(const nixlBackendInitParams* init_params) {
 	return new nixlGusliEngine(init_params);
@@ -24,7 +25,14 @@ namespace {
 void destroy_gusli_engine(nixlBackendEngine *engine) { delete engine; }
 [[nodiscard]] const char* get_plugin_name() { return "GUSLI"; }	// PLUGIN_NAME
 [[nodiscard]] const char* get_plugin_version() { return "0.1.0"; }	// PLUGIN_VERSION
-[[nodiscard]] nixl_b_params_t get_backend_options() { return nixl_b_params_t(); }
+[[nodiscard]] nixl_b_params_t get_backend_options() {
+    nixl_b_params_t params;
+    params["client_name"] = "Debug unique client name (optional)";
+    params["max_num_simultaneous_requests"] = "Integer, typically ~256 (optional)";
+    params["config_file"] = "string of block devices or path to config file (mandatory)";
+    return params;
+}
+
 nixlBackendPlugin plugin = {
 	NIXL_PLUGIN_API_VERSION,
 	create_gusli_engine,

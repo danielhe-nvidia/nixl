@@ -21,13 +21,14 @@
 #define __LOG_DBG(format, ...) { NIXL_DEBUG << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } while (0)
 #define __LOG_TRC(format, ...) { NIXL_TRACE << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } while (0)
 #define __LOG_RETERR(rv, format, ...) do { \
-	__LOG_ERR("error=%d, " format, (int)rv, ##__VA_ARGS__); \
+	__LOG_ERR("nixl_err=%d, " format, (int)rv, ##__VA_ARGS__); \
 	return rv; \
 } while (0)
 
 nixlGusliEngine::nixlGusliEngine(const nixlBackendInitParams* np) : nixlBackendEngine(np) {
 	lib = &gusli::global_clnt_context::get();
-	gp.log = stdout;							// Redirect gusli logs to stdout
+	gusli::global_clnt_context::init_params gp;				// Convert nixl params to lib params
+	gp.log = stdout;										// Redirect gusli logs to stdout
 	if (np && np->customParams) {
 		const nixl_b_params_t* bp = np->customParams;
 		if (bp->count("client_name") > 0)
@@ -40,7 +41,7 @@ nixlGusliEngine::nixlGusliEngine(const nixlBackendInitParams* np) : nixlBackendE
 	const int rv = lib->init(gp);
 	this->initErr = (rv != 0);
 	if (this->initErr) {
-		__LOG_ERR("Error opening Gusli driver rv=%d", rv);
+		__LOG_ERR("Error opening driver rv=%d", rv);
 		lib = nullptr;
 	}
 }
@@ -50,11 +51,11 @@ nixlGusliEngine::~nixlGusliEngine() {
 		const int rv = lib->destroy();
 		lib = nullptr;
 		if (rv)
-			__LOG_ERR("Error closing Gusli driver rv=%d", rv);
+			__LOG_ERR("Error closing driver rv=%d", rv);
 	}
 }
 
-static nixl_status_t __err_conv(const gusli::connect_rv rv) {	// Convert connection error
+[[nodiscard]] static nixl_status_t __err_conv(const gusli::connect_rv rv) {	// Convert connection error
 	if (rv == gusli::connect_rv::C_OK)              return NIXL_SUCCESS;
 	if (rv == gusli::connect_rv::C_NO_DEVICE)       return NIXL_ERR_NOT_FOUND;
 	if (rv == gusli::connect_rv::C_WRONG_ARGUMENTS) return NIXL_ERR_INVALID_PARAM;
@@ -77,7 +78,7 @@ nixl_status_t nixlGusliEngine::_open(uint64_t devId) {
 		v.ref_count = 1;
 		const gusli::bdev_info& i = v.bi;
 		lib->bdev_get_info(bdev, &v.bi);
-		__LOG_DBG("Open: {bdev uuid=%.16s, fd=%d name=%s, block_size=%u[B], #blocks=0x%lx}", bdev.uuid, i.bdev_descriptor, i.name, i.block_size, i.num_total_blocks);
+		__LOG_DBG("Open: 0x%lx {bdev uuid=%.16s, fd=%d name=%s, block_size=%u[B], #blocks=0x%lx}", devId, bdev.uuid, i.bdev_descriptor, i.name, i.block_size, i.num_total_blocks);
 		bdevs[devId] = v;
 	}
 	return NIXL_SUCCESS;
@@ -97,35 +98,36 @@ nixl_status_t nixlGusliEngine::_close(uint64_t devId) {
 		}
 		gusli::backend_bdev_id bdev; bdev.set_from(devId);
 		const gusli::connect_rv rv = lib->bdev_disconnect(bdev);
-		if (rv != gusli::connect_rv::C_OK)
+		if (rv != gusli::connect_rv::C_OK) {
+			v.ref_count++;		// Device will not be erased from the hash so next open() / close() will be able to pick it up and possibly close later
 			__LOG_RETERR(__err_conv(rv), "disconnect uuid=%.16s rv=%d", bdev.uuid, (int)rv);
-		__LOG_DBG("Close: {bdev uuid=%.16s, fd=%d name=%s, block_size=%u[B], #blocks=0x%lx}", bdev.uuid, i.bdev_descriptor, i.name, i.block_size, i.num_total_blocks);
+		}
+		__LOG_DBG("Close: 0x%lx {bdev uuid=%.16s, fd=%d name=%s, block_size=%u[B], #blocks=0x%lx}", devId, bdev.uuid, i.bdev_descriptor, i.name, i.block_size, i.num_total_blocks);
 		bdevs.erase(devId);
 	}
 	return NIXL_SUCCESS;
 }
 
-class nixlGusliMetadata : public nixlBackendMD {
+class nixlGusliMemReq : public nixlBackendMD {			// Register/Unregister request
  public:
-	gusli::backend_bdev_id bdev;
-	uint64_t devId;
+	gusli::backend_bdev_id bdev;						// Gusli bdev uuid
+	uint64_t devId;										// Nixl bdev uuid
 	std::vector<gusli::io_buffer_t> io_bufs;
-	std::string metadata;
+	std::string metadata;								// Just for future, currently unused
 	nixl_mem_t mem_type;
-	nixlGusliMetadata(const nixlBlobDesc &mem, nixl_mem_t _mem_type) : nixlBackendMD(true) {
+	nixlGusliMemReq(const nixlBlobDesc &mem, nixl_mem_t _mem_type) : nixlBackendMD(true) {
 		bdev.set_from(mem.devId);
 		devId = mem.devId;
 		metadata = mem.metaInfo;
 		mem_type = _mem_type;
 	}
-	~nixlGusliMetadata() {}
 };
 
 nixl_status_t nixlGusliEngine::registerMem(const nixlBlobDesc &mem, const nixl_mem_t &mem_type, nixlBackendMD* &out) {
 	out = nullptr;
 	if ((mem_type != DRAM_SEG) && (mem_type != BLK_SEG))		// we register only ram buffers
 		__LOG_RETERR(NIXL_ERR_BACKEND, "type not supported %d!=%d", (int)mem_type, (int)DRAM_SEG);
-	nixlGusliMetadata *md = new nixlGusliMetadata(mem, mem_type);
+	std::unique_ptr<nixlGusliMemReq> md = std::make_unique<nixlGusliMemReq>(mem, mem_type);
 	if (!md) __LOG_RETERR(NIXL_ERR_BACKEND, "out of mem");
 	__LOG_DBG("register dev[0x%lx].ram_lba[%p].len=0x%lx, mem_type=%u, md=%s", mem.devId, (void*)mem.addr, mem.len, mem_type, mem.metaInfo.c_str());
 	md->io_bufs.emplace_back(gusli::io_buffer_t{ .ptr = (void*)mem.addr, .byte_len = mem.len });
@@ -136,17 +138,18 @@ nixl_status_t nixlGusliEngine::registerMem(const nixlBlobDesc &mem, const nixl_m
 			return NIXL_ERR_NOT_FOUND;
 		const gusli::connect_rv rv = lib->bdev_bufs_register(md->bdev, md->io_bufs);
 		if (rv != gusli::connect_rv::C_OK) {
-			delete md;
+			(void)_close(md->devId);	// Even if close fails, nothing todo with its error code
 			__LOG_RETERR(__err_conv(rv), "register buf rv=%d, [%p,0x%lx]", (int)rv, (void*)mem.addr, mem.len);
 		}
 	}
-	out = (nixlBackendMD*)md;
+	out = (nixlBackendMD*)md.release();
 	return NIXL_SUCCESS;
 }
 
 nixl_status_t nixlGusliEngine::deregisterMem(nixlBackendMD* _md) {
-	nixlGusliMetadata *md = (nixlGusliMetadata *)_md;
+	nixlGusliMemReq *md = (nixlGusliMemReq *)_md;
 	if (!md) __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "md==null");
+	std::unique_ptr<nixlGusliMemReq> auto_deleter = std::unique_ptr<nixlGusliMemReq>(md);	// Regardless of the outcome: md should be deleted
 	__LOG_DBG("unregister dev[0x%lx].ram_lba[%p].len=0x%lx, mem_type=%u", md->devId, (void*)md->io_bufs[0].ptr, md->io_bufs[0].byte_len, md->mem_type);
 	if (md->mem_type == BLK_SEG) {
 		// Nothing to do
@@ -157,7 +160,6 @@ nixl_status_t nixlGusliEngine::deregisterMem(nixlBackendMD* _md) {
 		if (_close(md->devId) != NIXL_SUCCESS)
 			return NIXL_ERR_NOT_FOUND;
 	}
-	delete md;
 	return NIXL_SUCCESS;
 }
 
@@ -168,11 +170,7 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 	enum gusli::io_error_codes pollable_async_rv;		// NIXL actively polls on rv instead of waiting for completion. Prevent race condition of free while completion is running by additional copy of rv
 	enum GB_req_type { GB_REQ_1TO1 = '1', GBREQ_COMPUND = 'C' } type;	// Represented by 1 gusli::io_request or an array of self for compound io
 	std::vector<class nixlGusliBackendReqH> child;		// Array of sub completions, possibly a tree, though tested only 2 level io.
-	static void completion_cb(nixlGusliBackendReqH *c) {
-		__LOG_IO(c, "_done, rv=%d", c->io.get_error());
-		c->pollable_async_rv = c->io.get_error();
-	}
-	nixl_status_t __get_comp_status(void) const {
+	[[nodiscard]] nixl_status_t __get_comp_status(void) const {
 		const enum gusli::io_error_codes rv = pollable_async_rv;
 		if (rv == gusli::io_error_codes::E_OK)           return NIXL_SUCCESS;
 		if (rv == gusli::io_error_codes::E_IN_TRANSFER)  return NIXL_IN_PROG;
@@ -187,7 +185,7 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 			type = GBREQ_COMPUND;
 			child.reserve(n_sub_ios);
 		}
-		io.params.set_completion(this, completion_cb);
+		io.params.set_async_pollable();
 		io.params.op = (_op == NIXL_WRITE) ? gusli::G_WRITE : gusli::G_READ;
 		__LOG_IO(this, "_prep[%c]", (char)type );
 	}
@@ -195,14 +193,14 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 		if (type == GBREQ_COMPUND)
 			child.clear();
 		__LOG_IO(this, "_free[%c]", (char)type);
+		(void)io.try_cancel();	// If io was completed - meaningless, otherwise if io is in air, cancel it so 'io' field can be free. dont care about return value because io will get free anyways
 	}
 	enum gusli::io_type op(void) const { return io.params.op; }
-	int set_bufs(int32_t gid, const nixlMetaDesc &local, const nixlMetaDesc &remote) {
+	void set_bufs(int32_t gid, const nixlMetaDesc &local, const nixlMetaDesc &remote) {
 		io.params.init_1_rng(op(), gid, (uint64_t)remote.addr, (uint64_t)local.len, (void*)local.addr);
 		__LOG_IO(this, ".RNG1: dev=%d, %p, 0x%lx[b], lba=0x%lx, gid=%d", remote.devId, (void*)local.addr, (uint64_t)local.len, (uint64_t)remote.addr, gid);
-		return 0;
 	}
-	int set_bufs(int32_t gid, const nixl_meta_dlist_t &local, const nixl_meta_dlist_t &remote) {
+	[[nodiscard]] int set_bufs(int32_t gid, const nixl_meta_dlist_t &local, const nixl_meta_dlist_t &remote) {
 		const int n_ranges = remote.descCount();
 		gusli::io_multi_map_t* mio = (gusli::io_multi_map_t*)local[0].addr;	// Allocate scatter gather in the first entry
 		mio->n_entries = (n_ranges - 1);		// First entry is the scatter gather
@@ -217,14 +215,18 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 				.offset_lba_bytes = (uint64_t)remote[i].addr };
 			__LOG_IO(this, ".RNG: dev=%d, %p, 0x%lx[b], lba=0x%lx, idx=%u", remote[i].devId, (void*)local[i].addr, (uint64_t)local[i].len, remote[i].addr, i);
 		}
+		if (false && (mio->n_entries > 64)) {			// I did not measure this number to opimize it
+			io.params.try_using_uring_api = true;		// More efficient for long range io's.
+			__LOG_IO(this, ".URING");
+		}
 		io.params.init_multi(op(), gid, *mio);
 		return 0;
 	}
-	int add_sub_io(const nixl_xfer_op_t _op, int32_t gid, const nixlMetaDesc &local, const nixlMetaDesc &remote) {
+	void add_sub_io(const nixl_xfer_op_t _op, int32_t gid, const nixlMetaDesc &local, const nixlMetaDesc &remote) {
 		auto& sub = child.emplace_back(_op, 0);
-		return sub.set_bufs(gid, local, remote);
+		sub.set_bufs(gid, local, remote);
 	}
-	nixl_status_t exec(void) {
+	[[nodiscard]] nixl_status_t exec(void) {
 		pollable_async_rv = gusli::io_error_codes::E_IN_TRANSFER;
 		if (type == GB_REQ_1TO1) {
 			const long n_bytes = (int)io.params.buf_size();
@@ -233,13 +235,15 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 		} else {
 			__LOG_IO(this, "start, n_sub_ios=%u", (unsigned)child.size());
 			for (auto& sub : child)
-				sub.exec();
+				(void)sub.exec();							// We know that return value is in progress
 		}
 		return NIXL_IN_PROG;
 	}
-	nixl_status_t poll_status(void) {
-		if (type == GB_REQ_1TO1)
+	[[nodiscard]] nixl_status_t poll_status(void) {
+		if (type == GB_REQ_1TO1) {
+			pollable_async_rv = io.get_error();
 			return __get_comp_status();
+		}
 		if (pollable_async_rv != gusli::io_error_codes::E_IN_TRANSFER)
 			return __get_comp_status();						// All sub ios returned and already updated this compound op
 		for (auto& sub : child) {
@@ -250,7 +254,7 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 			if (sub.poll_status() != NIXL_SUCCESS) {
 				__LOG_IO(this, "_done_all_sub, inherit_sub_io[%u].rv=%d", (unsigned)(&sub - &child[0]), sub.pollable_async_rv);
 				pollable_async_rv = sub.pollable_async_rv;	// Propagate error up the tree
-				return __get_comp_status();					// Dont care about success/failure of the rest
+				return __get_comp_status();					// Dont care about success/failure of the rest of children
 			}
 		}
 		__LOG_IO(this, "_done_all_sub, success");
@@ -259,7 +263,7 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 	}
 };
 
-static bool __is_entire_io_to_1_bdev(const nixl_meta_dlist_t &remote) {
+[[nodiscard]] static bool __is_entire_io_to_1_bdev(const nixl_meta_dlist_t &remote) {
 	const uint64_t devId = remote[0].devId;
 	const unsigned n_ranges = remote.descCount();
 	for (unsigned i = 1; i < n_ranges; i++)
@@ -276,7 +280,7 @@ nixl_status_t nixlGusliEngine::prepXfer(const nixl_xfer_op_t &op,
 										const nixl_opt_b_args_t* opt_args) const {
 	handle = nullptr;
 	// Verify params
-	if (strcmp(remote_agent.c_str(), gp.client_name)) __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "Remote(%s) != localAgent(%s)", remote_agent.c_str(), gp.client_name);
+	//if (strcmp(remote_agent.c_str(), gp.client_name)) __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "Remote(%s) != localAgent(%s)", remote_agent.c_str(), gp.client_name);
 	if (local.getType() != DRAM_SEG) __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "Local memory type must be DRAM_SEG, got %d", local.getType());
 	if (remote.getType() != BLK_SEG) __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "Remote memory type must be BLK_SEG, got %d", remote.getType());
 	if (local.descCount() != remote.descCount()) __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "Mismatch in descriptor counts - local[%d] != remote[%d]", local.descCount(), remote.descCount());
@@ -289,24 +293,23 @@ nixl_status_t nixlGusliEngine::prepXfer(const nixl_xfer_op_t &op,
 	const bool can_use_multi_range_optimization = (entire_io_1_bdev && has_sgl_mem);
 	const bool need_only_1_gusli_io = (is_single_range_io || can_use_multi_range_optimization);
 
-	nixlGusliBackendReqH *req = new nixlGusliBackendReqH(op, need_only_1_gusli_io ? 0 : n_ranges);
+	std::unique_ptr<nixlGusliBackendReqH> req = std::make_unique<nixlGusliBackendReqH>(op, need_only_1_gusli_io ? 0 : n_ranges);
 	if (!req) __LOG_RETERR(NIXL_ERR_BACKEND, "out of mem");
-	//__LOG_IO(req, "HDR: 1-gio=%d, 1-bdev=%d, has_sgl=%d, vec_size=%u, opt=%p cust=%s", need_only_1_gusli_io, entire_io_1_bdev, has_sgl_mem, n_ranges, opt_args, opt_args->customParam.c_str());
+	//__LOG_IO(req.get(), "HDR: 1-gio=%d, 1-bdev=%d, has_sgl=%d, vec_size=%u, opt=%p cust=%s", need_only_1_gusli_io, entire_io_1_bdev, has_sgl_mem, n_ranges, opt_args, opt_args->customParam.c_str());
 	if (is_single_range_io) {
 		req->set_bufs(gid, local[0], remote[0]);
 	} else if (can_use_multi_range_optimization) {
 		const int rv = req->set_bufs(gid, local, remote);
 		if (rv < 0) {
-			delete req;
 			__LOG_RETERR(NIXL_ERR_INVALID_PARAM, "missing SGL, or SGL too small 0x%lx[b]", local[0].len);
 		}
 	} else {
 		unsigned i = (has_sgl_mem ? 1 : 0);		// If supplied sgl, can't use it for now, just ignore it
-		__LOG_IO(req, "_Compound IO, 1-bdev=%d, has_sgl=%d, n_sub_ios=%u", entire_io_1_bdev, has_sgl_mem, (n_ranges - i));
+		__LOG_IO(req.get(), "_Compound IO, 1-bdev=%d, has_sgl=%d, n_sub_ios=%u", entire_io_1_bdev, has_sgl_mem, (n_ranges - i));
 		for (; i < n_ranges; i++)
 			req->add_sub_io(op, get_gid_of_bdev(remote[i].devId), local[i], remote[i]);
 	}
-	handle = (nixlBackendReqH*)req;
+	handle = (nixlBackendReqH*)req.release();
 	return NIXL_SUCCESS;
 }
 

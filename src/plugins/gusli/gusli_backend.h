@@ -28,7 +28,6 @@ static inline nixl_mem_list_t __getSupportedGusliMems(void) {
 
 class nixlGusliEngine : public nixlBackendEngine {
  private:
-	gusli::global_clnt_context::init_params gp;				// Library params
 	gusli::global_clnt_context* lib;						// Library context
 	struct bdev_refcount_t { 								// No support for open/close so use refcount
 		gusli::bdev_info bi;

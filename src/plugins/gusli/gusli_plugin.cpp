@@ -17,14 +17,15 @@
 
 #include "backend/backend_plugin.h"
 #include "gusli_backend.h"
-static nixlBackendEngine* create_gusli_engine(const nixlBackendInitParams* init_params) {
+namespace {
+[[nodiscard]] nixlBackendEngine* create_gusli_engine(const nixlBackendInitParams* init_params) {
 	return new nixlGusliEngine(init_params);
 }
-static void destroy_gusli_engine(nixlBackendEngine *engine) { delete engine; }
-static const char* get_plugin_name() { return "GUSLI"; }	// PLUGIN_NAME
-static const char* get_plugin_version() { return "0.1.0"; }	// PLUGIN_VERSION
-static nixl_b_params_t get_backend_options() { return nixl_b_params_t(); }
-static nixlBackendPlugin plugin = {
+void destroy_gusli_engine(nixlBackendEngine *engine) { delete engine; }
+[[nodiscard]] const char* get_plugin_name() { return "GUSLI"; }	// PLUGIN_NAME
+[[nodiscard]] const char* get_plugin_version() { return "0.1.0"; }	// PLUGIN_VERSION
+[[nodiscard]] nixl_b_params_t get_backend_options() { return nixl_b_params_t(); }
+nixlBackendPlugin plugin = {
 	NIXL_PLUGIN_API_VERSION,
 	create_gusli_engine,
 	destroy_gusli_engine,
@@ -33,7 +34,7 @@ static nixlBackendPlugin plugin = {
 	get_backend_options,
 	__getSupportedGusliMems
 };
-
+} // namespace
 #ifdef STATIC_PLUGIN_GUSLI
 	nixlBackendPlugin* createStaticGusliPlugin() { return &plugin; }
 #else

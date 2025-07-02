@@ -25,20 +25,38 @@
 	return rv; \
 } while (0)
 
-nixlGusliEngine::nixlGusliEngine(const nixlBackendInitParams* np) : nixlBackendEngine(np) {
+namespace {
+[[nodiscard]] nixl_status_t __err_conv(const gusli::connect_rv rv) {
+	if (rv == gusli::connect_rv::C_OK)              return NIXL_SUCCESS;
+	if (rv == gusli::connect_rv::C_NO_DEVICE)       return NIXL_ERR_NOT_FOUND;
+	if (rv == gusli::connect_rv::C_WRONG_ARGUMENTS) return NIXL_ERR_INVALID_PARAM;
+	return NIXL_ERR_BACKEND;
+}
+
+[[nodiscard]] bool isEntireIOto1Bdev(const nixl_meta_dlist_t &remote) {
+	const uint64_t devId = remote[0].devId;
+	const unsigned n_ranges = remote.descCount();
+	for (unsigned i = 1; i < n_ranges; i++)
+		if (devId != remote[i].devId)
+			return false;
+	return true;
+}
+}; // namespace
+
+nixlGusliEngine::nixlGusliEngine(const nixlBackendInitParams* nixlInit) : nixlBackendEngine(nixlInit) {
 	lib = &gusli::global_clnt_context::get();
-	gusli::global_clnt_context::init_params gp;				// Convert nixl params to lib params
-	gp.log = stdout;										// Redirect gusli logs to stdout
-	if (np && np->customParams) {
-		const nixl_b_params_t* bp = np->customParams;
-		if (bp->count("client_name") > 0)
-			gp.client_name = bp->at("client_name").c_str();
-		if (bp->count("max_num_simultaneous_requests") > 0)
-			gp.max_num_simultaneous_requests = std::stoi(bp->at("max_num_simultaneous_requests"));
-		if (bp->count("config_file") > 0)
-			gp.config_file = bp->at("config_file").c_str();
+	gusli::global_clnt_context::init_params gusli_params;		// Convert nixl params to lib params
+	gusli_params.log = stdout;									// Redirect gusli logs to stdout, important errors will be printed by the plugin
+	if (nixlInit && nixlInit->customParams) {
+		const nixl_b_params_t* backParams = nixlInit->customParams;
+		if (backParams->count("client_name") > 0)
+			gusli_params.client_name = backParams->at("client_name").c_str();
+		if (backParams->count("max_num_simultaneous_requests") > 0)
+			gusli_params.max_num_simultaneous_requests = std::stoi(backParams->at("max_num_simultaneous_requests"));
+		if (backParams->count("config_file") > 0)
+			gusli_params.config_file = backParams->at("config_file").c_str();
 	}
-	const int rv = lib->init(gp);
+	const int rv = lib->init(gusli_params);
 	this->initErr = (rv != 0);
 	if (this->initErr) {
 		__LOG_ERR("Error opening driver rv=%d", rv);
@@ -55,17 +73,10 @@ nixlGusliEngine::~nixlGusliEngine() {
 	}
 }
 
-[[nodiscard]] static nixl_status_t __err_conv(const gusli::connect_rv rv) {	// Convert connection error
-	if (rv == gusli::connect_rv::C_OK)              return NIXL_SUCCESS;
-	if (rv == gusli::connect_rv::C_NO_DEVICE)       return NIXL_ERR_NOT_FOUND;
-	if (rv == gusli::connect_rv::C_WRONG_ARGUMENTS) return NIXL_ERR_INVALID_PARAM;
-	return NIXL_ERR_BACKEND;
-}
-
 nixl_status_t nixlGusliEngine::_open(uint64_t devId) {
 	auto it = bdevs.find(devId);
 	if (it != bdevs.end()) {
-		struct bdev_refcount_t& v = it->second;
+		bdev_refcount_t& v = it->second;
 		v.ref_count++;
 		const gusli::bdev_info& i = v.bi;
 		__LOG_DBG("Open: 0x%lx already exists[ref=%d]: fd=%d, name=%s", devId, v.ref_count, i.bdev_descriptor, i.name);
@@ -74,7 +85,7 @@ nixl_status_t nixlGusliEngine::_open(uint64_t devId) {
 		const gusli::connect_rv rv = lib->bdev_connect(bdev);
 		if (rv != gusli::connect_rv::C_OK)
 			__LOG_RETERR(__err_conv(rv), "connect uuid=%.16s rv=%d", bdev.uuid, (int)rv);
-		struct bdev_refcount_t v;
+		bdev_refcount_t v;
 		v.ref_count = 1;
 		const gusli::bdev_info& i = v.bi;
 		lib->bdev_get_info(bdev, &v.bi);
@@ -89,7 +100,7 @@ nixl_status_t nixlGusliEngine::_close(uint64_t devId) {
 	if (it == bdevs.end()) {
 		__LOG_DBG("Close: 0x%lx not oppened", devId);
 	} else {
-		struct bdev_refcount_t& v = it->second;
+		bdev_refcount_t& v = it->second;
 		const gusli::bdev_info& i = v.bi;
 		v.ref_count--;
 		if (v.ref_count > 0) {
@@ -125,10 +136,9 @@ class nixlGusliMemReq : public nixlBackendMD {			// Register/Unregister request
 
 nixl_status_t nixlGusliEngine::registerMem(const nixlBlobDesc &mem, const nixl_mem_t &mem_type, nixlBackendMD* &out) {
 	out = nullptr;
-	if ((mem_type != DRAM_SEG) && (mem_type != BLK_SEG))		// we register only ram buffers
-		__LOG_RETERR(NIXL_ERR_BACKEND, "type not supported %d!=%d", (int)mem_type, (int)DRAM_SEG);
+	if ((mem_type != DRAM_SEG) && (mem_type != BLK_SEG))
+		__LOG_RETERR(NIXL_ERR_NOT_SUPPORTED, "type not supported %d!=%d", (int)mem_type, (int)DRAM_SEG);
 	std::unique_ptr<nixlGusliMemReq> md = std::make_unique<nixlGusliMemReq>(mem, mem_type);
-	if (!md) __LOG_RETERR(NIXL_ERR_BACKEND, "out of mem");
 	__LOG_DBG("register dev[0x%lx].ram_lba[%p].len=0x%lx, mem_type=%u, md=%s", mem.devId, (void*)mem.addr, mem.len, mem_type, mem.metaInfo.c_str());
 	md->io_bufs.emplace_back(gusli::io_buffer_t{ .ptr = (void*)mem.addr, .byte_len = mem.len });
 	if (mem_type == BLK_SEG) {
@@ -196,17 +206,17 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 		(void)io.try_cancel();	// If io was completed - meaningless, otherwise if io is in air, cancel it so 'io' field can be free. dont care about return value because io will get free anyways
 	}
 	enum gusli::io_type op(void) const { return io.params.op; }
-	void set_bufs(int32_t gid, const nixlMetaDesc &local, const nixlMetaDesc &remote) {
+	void setBufs(int32_t gid, const nixlMetaDesc &local, const nixlMetaDesc &remote) {
 		io.params.init_1_rng(op(), gid, (uint64_t)remote.addr, (uint64_t)local.len, (void*)local.addr);
 		__LOG_IO(this, ".RNG1: dev=%d, %p, 0x%lx[b], lba=0x%lx, gid=%d", remote.devId, (void*)local.addr, (uint64_t)local.len, (uint64_t)remote.addr, gid);
 	}
-	[[nodiscard]] int set_bufs(int32_t gid, const nixl_meta_dlist_t &local, const nixl_meta_dlist_t &remote) {
+	[[nodiscard]] nixl_status_t setBufs(int32_t gid, const nixl_meta_dlist_t &local, const nixl_meta_dlist_t &remote) {
 		const int n_ranges = remote.descCount();
 		gusli::io_multi_map_t* mio = (gusli::io_multi_map_t*)local[0].addr;	// Allocate scatter gather in the first entry
 		mio->n_entries = (n_ranges - 1);		// First entry is the scatter gather
 		if (mio->my_size() > local[0].len) {
 			__LOG_ERR("mmap of sg=0x%lx[b] > is too short=0x%lx[b], Enlarge mapping or use shorter transfer list", mio->my_size(), local[0].len);
-			return -1;
+			return NIXL_ERR_INVALID_PARAM;
 		}
 		__LOG_IO(this, ".SGL: dev=%d, %p, 0x%lx[b], lba=0x%lx, gid=%d", remote[0].devId, mio, (uint64_t)local[0].len, remote[0].addr, gid);
 		for (int i = 1; i < n_ranges; i++) {		// Skip first range
@@ -220,11 +230,11 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 			__LOG_IO(this, ".URING");
 		}
 		io.params.init_multi(op(), gid, *mio);
-		return 0;
+		return NIXL_SUCCESS;
 	}
-	void add_sub_io(const nixl_xfer_op_t _op, int32_t gid, const nixlMetaDesc &local, const nixlMetaDesc &remote) {
+	void addSubIO(const nixl_xfer_op_t _op, int32_t gid, const nixlMetaDesc &local, const nixlMetaDesc &remote) {
 		auto& sub = child.emplace_back(_op, 0);
-		sub.set_bufs(gid, local, remote);
+		sub.setBufs(gid, local, remote);
 	}
 	[[nodiscard]] nixl_status_t exec(void) {
 		pollable_async_rv = gusli::io_error_codes::E_IN_TRANSFER;
@@ -239,7 +249,7 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 		}
 		return NIXL_IN_PROG;
 	}
-	[[nodiscard]] nixl_status_t poll_status(void) {
+	[[nodiscard]] nixl_status_t pollStatus(void) {
 		if (type == GB_REQ_1TO1) {
 			pollable_async_rv = io.get_error();
 			return __get_comp_status();
@@ -247,11 +257,11 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 		if (pollable_async_rv != gusli::io_error_codes::E_IN_TRANSFER)
 			return __get_comp_status();						// All sub ios returned and already updated this compound op
 		for (auto& sub : child) {
-			if (sub.poll_status() == NIXL_IN_PROG)
+			if (sub.pollStatus() == NIXL_IN_PROG)
 				return NIXL_IN_PROG;						// At least 1 sub-io is in air, still wait
 		}
 		for (auto& sub : child) {							// All sub-ios completed find out if at least 1 failed
-			if (sub.poll_status() != NIXL_SUCCESS) {
+			if (sub.pollStatus() != NIXL_SUCCESS) {
 				__LOG_IO(this, "_done_all_sub, inherit_sub_io[%u].rv=%d", (unsigned)(&sub - &child[0]), sub.pollable_async_rv);
 				pollable_async_rv = sub.pollable_async_rv;	// Propagate error up the tree
 				return __get_comp_status();					// Dont care about success/failure of the rest of children
@@ -263,15 +273,6 @@ class nixlGusliBackendReqH : public nixlBackendReqH {
 	}
 };
 
-[[nodiscard]] static bool __is_entire_io_to_1_bdev(const nixl_meta_dlist_t &remote) {
-	const uint64_t devId = remote[0].devId;
-	const unsigned n_ranges = remote.descCount();
-	for (unsigned i = 1; i < n_ranges; i++)
-		if (devId != remote[i].devId)
-			return false;
-	return true;
-}
-
 nixl_status_t nixlGusliEngine::prepXfer(const nixl_xfer_op_t &op,
 										const nixl_meta_dlist_t &local,
 										const nixl_meta_dlist_t &remote,
@@ -280,7 +281,7 @@ nixl_status_t nixlGusliEngine::prepXfer(const nixl_xfer_op_t &op,
 										const nixl_opt_b_args_t* opt_args) const {
 	handle = nullptr;
 	// Verify params
-	//if (strcmp(remote_agent.c_str(), gp.client_name)) __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "Remote(%s) != localAgent(%s)", remote_agent.c_str(), gp.client_name);
+	//if (strcmp(remote_agent.c_str(), gusli_params.client_name)) __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "Remote(%s) != localAgent(%s)", remote_agent.c_str(), gusli_params.client_name);
 	if (local.getType() != DRAM_SEG) __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "Local memory type must be DRAM_SEG, got %d", local.getType());
 	if (remote.getType() != BLK_SEG) __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "Remote memory type must be BLK_SEG, got %d", remote.getType());
 	if (local.descCount() != remote.descCount()) __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "Mismatch in descriptor counts - local[%d] != remote[%d]", local.descCount(), remote.descCount());
@@ -289,25 +290,23 @@ nixl_status_t nixlGusliEngine::prepXfer(const nixl_xfer_op_t &op,
 	const unsigned n_ranges = remote.descCount();
 	const bool is_single_range_io = (n_ranges == 1);
 	const bool has_sgl_mem = (opt_args && (opt_args->customParam.find("-sgl") != std::string::npos));
-	const bool entire_io_1_bdev = __is_entire_io_to_1_bdev(remote);
+	const bool entire_io_1_bdev = isEntireIOto1Bdev(remote);
 	const bool can_use_multi_range_optimization = (entire_io_1_bdev && has_sgl_mem);
 	const bool need_only_1_gusli_io = (is_single_range_io || can_use_multi_range_optimization);
 
 	std::unique_ptr<nixlGusliBackendReqH> req = std::make_unique<nixlGusliBackendReqH>(op, need_only_1_gusli_io ? 0 : n_ranges);
-	if (!req) __LOG_RETERR(NIXL_ERR_BACKEND, "out of mem");
 	//__LOG_IO(req.get(), "HDR: 1-gio=%d, 1-bdev=%d, has_sgl=%d, vec_size=%u, opt=%p cust=%s", need_only_1_gusli_io, entire_io_1_bdev, has_sgl_mem, n_ranges, opt_args, opt_args->customParam.c_str());
 	if (is_single_range_io) {
-		req->set_bufs(gid, local[0], remote[0]);
+		req->setBufs(gid, local[0], remote[0]);
 	} else if (can_use_multi_range_optimization) {
-		const int rv = req->set_bufs(gid, local, remote);
-		if (rv < 0) {
-			__LOG_RETERR(NIXL_ERR_INVALID_PARAM, "missing SGL, or SGL too small 0x%lx[b]", local[0].len);
-		}
+		const nixl_status_t rv = req->setBufs(gid, local, remote);
+		if (rv != NIXL_SUCCESS)
+			__LOG_RETERR(rv, "missing SGL, or SGL too small 0x%lx[b]", local[0].len);
 	} else {
 		unsigned i = (has_sgl_mem ? 1 : 0);		// If supplied sgl, can't use it for now, just ignore it
 		__LOG_IO(req.get(), "_Compound IO, 1-bdev=%d, has_sgl=%d, n_sub_ios=%u", entire_io_1_bdev, has_sgl_mem, (n_ranges - i));
 		for (; i < n_ranges; i++)
-			req->add_sub_io(op, get_gid_of_bdev(remote[i].devId), local[i], remote[i]);
+			req->addSubIO(op, get_gid_of_bdev(remote[i].devId), local[i], remote[i]);
 	}
 	handle = (nixlBackendReqH*)req.release();
 	return NIXL_SUCCESS;
@@ -325,7 +324,7 @@ nixl_status_t nixlGusliEngine::postXfer(const nixl_xfer_op_t &operation, const n
 nixl_status_t nixlGusliEngine::checkXfer(nixlBackendReqH* handle) const {
 	nixlGusliBackendReqH *req = (nixlGusliBackendReqH *)handle;
 	if (req)
-		return req->poll_status();
+		return req->pollStatus();
 	__LOG_RETERR(NIXL_ERR_INVALID_PARAM, "null handle");
 }
 

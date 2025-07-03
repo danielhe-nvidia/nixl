@@ -19,13 +19,24 @@
 #include "gusli_backend.h"
 
 namespace {
-[[nodiscard]] nixlBackendEngine* create_gusli_engine(const nixlBackendInitParams* init_params) {
-	return new nixlGusliEngine(init_params);
+[[nodiscard]] nixlBackendEngine *
+create_gusli_engine (const nixlBackendInitParams *init_params) {
+    return new nixlGusliEngine (init_params);
 }
-void destroy_gusli_engine(nixlBackendEngine *engine) { delete engine; }
-[[nodiscard]] const char* get_plugin_name() { return "GUSLI"; }	// PLUGIN_NAME
-[[nodiscard]] const char* get_plugin_version() { return "0.1.0"; }	// PLUGIN_VERSION
-[[nodiscard]] nixl_b_params_t get_backend_options() {
+void
+destroy_gusli_engine (nixlBackendEngine *engine) {
+    delete engine;
+}
+[[nodiscard]] const char *
+get_plugin_name() {
+    return "GUSLI";
+} // PLUGIN_NAME
+[[nodiscard]] const char *
+get_plugin_version() {
+    return "0.1.0";
+} // PLUGIN_VERSION
+[[nodiscard]] nixl_b_params_t
+get_backend_options() {
     nixl_b_params_t params;
     params["client_name"] = "Debug unique client name (optional)";
     params["max_num_simultaneous_requests"] = "Integer, typically ~256 (optional)";
@@ -33,19 +44,24 @@ void destroy_gusli_engine(nixlBackendEngine *engine) { delete engine; }
     return params;
 }
 
-nixlBackendPlugin plugin = {
-	NIXL_PLUGIN_API_VERSION,
-	create_gusli_engine,
-	destroy_gusli_engine,
-	get_plugin_name,
-	get_plugin_version,
-	get_backend_options,
-	__getSupportedGusliMems
-};
+nixlBackendPlugin plugin = {NIXL_PLUGIN_API_VERSION,
+                            create_gusli_engine,
+                            destroy_gusli_engine,
+                            get_plugin_name,
+                            get_plugin_version,
+                            get_backend_options,
+                            __getSupportedGusliMems};
 } // namespace
 #ifdef STATIC_PLUGIN_GUSLI
-	nixlBackendPlugin* createStaticGusliPlugin() { return &plugin; }
+nixlBackendPlugin *
+createStaticGusliPlugin() {
+    return &plugin;
+}
 #else
-	extern "C" NIXL_PLUGIN_EXPORT nixlBackendPlugin* nixl_plugin_init() { return &plugin; }
-	extern "C" NIXL_PLUGIN_EXPORT void nixl_plugin_fini() {}
+extern "C" NIXL_PLUGIN_EXPORT nixlBackendPlugin *
+nixl_plugin_init() {
+    return &plugin;
+}
+extern "C" NIXL_PLUGIN_EXPORT void
+nixl_plugin_fini() {}
 #endif

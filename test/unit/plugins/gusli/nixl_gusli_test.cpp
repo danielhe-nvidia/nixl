@@ -579,8 +579,8 @@ public:
 
 int
 main (int argc, char *argv[]) {
-    static constexpr const int default_num_transfers = (1 << 13);
-    static constexpr const size_t default_transfer_size = (1UL << 19); // 512KB
+    static constexpr const int default_num_transfers = 8; //(1 << 13);
+    static constexpr const size_t default_transfer_size = (1UL << 12); // 512KB
     int opt, num_transfers = default_num_transfers;
     size_t transfer_size = default_transfer_size;
     while ((opt = getopt (argc, argv, "n:s:h")) != -1) {

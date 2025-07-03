@@ -200,9 +200,13 @@ class nixlGusliBackendReqHbase : public nixlBackendReqH {
 
 class nixlGusliBackendReqH_1bdev : public nixlGusliBackendReqHbase {
 	gusli::io_request io;								// gusli executor of 1 io
+	static void completionCallback(nixlGusliBackendReqH_1bdev *c) {
+		__LOG_IO(c, "_doneCB, rv=%d", c->io.get_error());
+		c->pollableAsyncRV = c->io.get_error();		// Must be last line because once set, class can be destroyed
+	}
  public:
 	nixlGusliBackendReqH_1bdev(const nixl_xfer_op_t _op) : nixlGusliBackendReqHbase(_op) {
-		io.params.set_async_pollable();
+		io.params.set_completion(this, completionCallback);
 		io.params.op = op;
 	}
 	~nixlGusliBackendReqH_1bdev() {
@@ -229,6 +233,7 @@ class nixlGusliBackendReqH_1bdev : public nixlGusliBackendReqHbase {
 		}
 		if (false && (mio->n_entries > 64)) {			// I did not measure this number to opimize it
 			io.params.try_using_uring_api = true;		// More efficient for long range io's.
+			io.params.set_async_pollable();				// Uring support is faster as polling without callback
 			__LOG_IO(this, ".URING");
 		}
 		io.params.init_multi(op, gid, *mio);
@@ -241,7 +246,8 @@ class nixlGusliBackendReqH_1bdev : public nixlGusliBackendReqHbase {
 		return NIXL_IN_PROG;
 	}
 	[[nodiscard]] nixl_status_t pollStatus(void) override {
-		pollableAsyncRV = io.get_error();
+		if (!io.has_callback())					// Callback will update pollable rv
+			pollableAsyncRV = io.get_error();
 		return getCompStatus();
 	}
 };

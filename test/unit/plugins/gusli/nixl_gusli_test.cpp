@@ -588,8 +588,8 @@ public:
 
 int
 main (int argc, char *argv[]) {
-    static constexpr const int default_num_transfers = 500;
-    static constexpr const size_t default_transfer_size = (1UL << 21); // 2[MB]
+    static constexpr const int default_num_transfers = 8;
+    static constexpr const size_t default_transfer_size = 4096;
     int opt, num_transfers = default_num_transfers;
     size_t transfer_size = default_transfer_size;
     while ((opt = getopt (argc, argv, "n:s:h")) != -1) {

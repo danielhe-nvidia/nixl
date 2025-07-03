@@ -24,10 +24,10 @@
     }                                                                                             \
     while (0)
 #define __LOG_DBG(format, ...)                                          \
-    do { NIXL_DEBUG << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } \
+    do { NIXL_ERROR << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } \
     while (0)
 #define __LOG_TRC(format, ...)                                          \
-    do { NIXL_TRACE << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } \
+    do { NIXL_ERROR << absl::StrFormat("GUSLI: " format, ##__VA_ARGS__); } \
     while (0)
 #define __LOG_RETERR(rv, format, ...)                              \
     do {                                                           \

@@ -126,9 +126,10 @@ RUN cd /usr/local/src && \
      make -j install-strip &&        \
      ldconfig
 
-RUN git clone ssh://git@gitlab-master.nvidia.com:12051/excelero/gusli.git && \
-     cd gusli; make all BUILD_RELEASE=1 BUILD_FOR_UNITEST=0 \
-     ldconfig
+RUN git clone https://github.com/nvidia/gusli.git && \
+     cd gusli && \
+     make all BUILD_RELEASE=1 BUILD_FOR_UNITEST=0 VERBOSE=1 ALLOW_USE_URING=0 && \
+     cd ..
 
 RUN rm -rf build && \
     mkdir build && \

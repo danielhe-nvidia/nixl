@@ -329,7 +329,7 @@ public:
                       remote[i].addr,
                       i);
         }
-        if (false && (mio->n_entries > 64)) { // I did not measure this number to opimize it
+        if (false && (mio->n_entries > 64)) { // I did not measure this number to opimize it, Not sure why getting (Operation not permitted) in NIXL container
             io.params.try_using_uring_api = true; // More efficient for long range io's.
             io.params.set_async_pollable(); // Uring support is faster as polling without callback
             __LOG_IO (this, ".URING");

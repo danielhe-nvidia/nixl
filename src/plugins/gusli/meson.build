@@ -19,17 +19,6 @@ plugin_deps = [ nixl_infra,
                 declare_dependency(link_args : ['-l' + gusli_lib_file]),
                 dependency('absl_log', required: true)]
 
-# Try to find liburing (optional dependency)
-uring_dep = dependency('liburing', required: false)
-have_uring = uring_dep.found()
-plugin_link_args = []
-if have_uring
-    compile_defs += ['-DHAVE_LIBURING']
-    plugin_deps += [uring_dep]
-    plugin_link_args = ['-luring']
-    message('liburing found, gusli may use io_uring')
-endif
-
 if 'GUSLI' in static_plugins
   gusli_backend_lib = static_library('GUSLI', cpp_sources,
         dependencies: plugin_deps,

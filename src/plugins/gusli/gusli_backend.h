@@ -42,7 +42,7 @@ public:
     bool
     supportsLocal (void) const override {
         return true;
-    } // Nixel client abscures the server so it acts as local, without remote
+    }
     bool
     supportsProgTh (void) const override {
         return false;
@@ -94,7 +94,7 @@ public:
     releaseReqH (nixlBackendReqH *io_handle) const override;
 
 private:
-    gusli::global_clnt_context *lib_; // Library context
+    gusli::global_clnt_context *lib_;
     struct bdevRefcountT { // No support for open/close so use refcount
         gusli::bdev_info bi;
         int ref_count;

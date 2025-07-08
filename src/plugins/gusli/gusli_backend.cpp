@@ -161,13 +161,13 @@ class nixlGusliMemReq : public nixlBackendMD { // Register/Unregister request
 public:
     gusli::backend_bdev_id bdev; // Gusli bdev uuid
     uint64_t devId; // Nixl bdev uuid
-    std::vector<gusli::io_buffer_t> io_bufs;
-    std::string metadata; // Just for future, currently unused
+    std::vector<gusli::io_buffer_t> ioBufs;
+    // std::string metadata; // Just for future, currently unused
     nixl_mem_t mem_type;
     nixlGusliMemReq (const nixlBlobDesc &mem, nixl_mem_t _mem_type) : nixlBackendMD (true) {
         bdev.set_from (mem.devId);
         devId = mem.devId;
-        metadata = mem.metaInfo;
+        // metadata = mem.metaInfo;
         mem_type = _mem_type;
     }
 };
@@ -187,17 +187,21 @@ nixlGusliEngine::registerMem (const nixlBlobDesc &mem,
                mem.len,
                mem_type,
                mem.metaInfo.c_str());
-    md->io_bufs.emplace_back (gusli::io_buffer_t{.ptr = (void *)mem.addr, .byte_len = mem.len});
+    md->ioBufs.emplace_back (gusli::io_buffer_t{.ptr = (void *)mem.addr, .byte_len = mem.len});
     if (mem_type == BLK_SEG) {
         // Todo: LBA of block devices, verify size, extend volume
     } else {
-        if (bdevOpen (md->devId) != NIXL_SUCCESS) return NIXL_ERR_NOT_FOUND;
-        const gusli::connect_rv rv = lib_->bdev_bufs_register (md->bdev, md->io_bufs);
+        const nixl_status_t openRv = bdevOpen (md->devId);
+        if (openRv != NIXL_SUCCESS)
+            return openRv;
+        const gusli::connect_rv rv = lib_->bdev_bufs_register (md->bdev, md->ioBufs);
         if (rv != gusli::connect_rv::C_OK) {
-            (void)bdevClose (md->devId); // Even if close fails, nothing todo with its error code
+            const nixl_status_t closeRv = bdevClose (md->devId);
+            // Even if close fails, nothing todo with its error code
             __LOG_RETERR (conErrConv (rv),
-                          "register buf rv=%d, [%p,0x%lx]",
+                          "register buf rv=%d, closeRV=%d, [%p,0x%lx]",
                           (int)rv,
+                          (int)closeRv,
                           (void *)mem.addr,
                           mem.len);
         }
@@ -214,20 +218,20 @@ nixlGusliEngine::deregisterMem (nixlBackendMD *_md) {
         std::unique_ptr<nixlGusliMemReq> (md); // Regardless of the outcome: md should be deleted
     __LOG_DBG ("unregister dev[0x%lx].ram_lba[%p].len=0x%lx, mem_type=%u",
                md->devId,
-               (void *)md->io_bufs[0].ptr,
-               md->io_bufs[0].byte_len,
+               (void *)md->ioBufs[0].ptr,
+               md->ioBufs[0].byte_len,
                md->mem_type);
     if (md->mem_type == BLK_SEG) {
         // Nothing to do
     } else {
-        const gusli::connect_rv rv = lib_->bdev_bufs_unregist (md->bdev, md->io_bufs);
+        const gusli::connect_rv rv = lib_->bdev_bufs_unregist (md->bdev, md->ioBufs);
         if (rv != gusli::connect_rv::C_OK)
             __LOG_RETERR (conErrConv (rv),
                           "unregister buf rv=%d, [%p,0x%lx]",
                           (int)rv,
-                          (void *)md->io_bufs[0].ptr,
-                          md->io_bufs[0].byte_len);
-        if (bdevClose (md->devId) != NIXL_SUCCESS) return NIXL_ERR_NOT_FOUND;
+                          (void *)md->ioBufs[0].ptr,
+                          md->ioBufs[0].byte_len);
+        return bdevClose (md->devId);
     }
     return NIXL_SUCCESS;
 }
@@ -263,21 +267,21 @@ protected:
     }
 };
 
-class nixlGusliBackendReqH_1bdev : public nixlGusliBackendReqHbase {
+class nixlGusliBackendReqHSingleBdev : public nixlGusliBackendReqHbase {
     gusli::io_request io; // gusli executor of 1 io
     static void
-    completionCallback (nixlGusliBackendReqH_1bdev *c) {
+    completionCallback (nixlGusliBackendReqHSingleBdev *c) {
         __LOG_IO (c, "_doneCB, rv=%d", c->io.get_error());
         c->pollableAsyncRV =
             c->io.get_error(); // Must be last line because once set, class can be destroyed
     }
 
 public:
-    nixlGusliBackendReqH_1bdev (const nixl_xfer_op_t _op) : nixlGusliBackendReqHbase (_op) {
+    nixlGusliBackendReqHSingleBdev (const nixl_xfer_op_t _op) : nixlGusliBackendReqHbase (_op) {
         io.params.set_completion (this, completionCallback);
         io.params.op = op;
     }
-    ~nixlGusliBackendReqH_1bdev() {
+    ~nixlGusliBackendReqHSingleBdev() {
         (void)io.try_cancel(); // If io was completed - meaningless, otherwise if io is in air,
                                // cancel it so 'io' field can be free. dont care about return value
                                // because io will get free anyways
@@ -354,17 +358,15 @@ public:
         return getCompStatus();
     }
 };
-class nixlGusliBackendReqHcompund : public nixlGusliBackendReqHbase {
-    std::vector<class nixlGusliBackendReqH_1bdev>
-        child; // Array of sub completions, possibly a tree, though tested only 2 level io.
+class nixlGusliBackendReqHCompound : public nixlGusliBackendReqHbase {
+    std::vector<class nixlGusliBackendReqHSingleBdev>
+        child; // Array of sub completions.
 public:
-    nixlGusliBackendReqHcompund (const nixl_xfer_op_t _op, unsigned nSubIOs)
+    nixlGusliBackendReqHCompound (const nixl_xfer_op_t _op, unsigned nSubIOs)
         : nixlGusliBackendReqHbase (_op) {
         child.reserve (nSubIOs);
     }
-    ~nixlGusliBackendReqHcompund() {
-        child.clear();
-    }
+    ~nixlGusliBackendReqHCompound() = default;      // Will cancle all child io
     void
     addSubIO (const nixl_xfer_op_t _op,
               int32_t gid,
@@ -376,7 +378,7 @@ public:
     [[nodiscard]] nixl_status_t
     exec (void) override {
         pollableAsyncRV = gusli::io_error_codes::E_IN_TRANSFER;
-        __LOG_IO (this, "start, nSubIOs=%u", (unsigned)child.size());
+        __LOG_IO (this, "start, nSubIOs=%zu", child.size());
         for (auto &sub : child)
             (void)sub.exec(); // We know that return value is in progress
         return NIXL_IN_PROG;
@@ -392,8 +394,8 @@ public:
         for (auto &sub : child) { // All sub-ios completed find out if at least 1 failed
             if (sub.pollStatus() != NIXL_SUCCESS) {
                 __LOG_IO (this,
-                          "_done_all_sub, inherit_sub_io[%u].rv=%d",
-                          (unsigned)(&sub - &child[0]),
+                          "_done_all_sub, inherit_sub_io[%zu].rv=%d",
+                          (&sub - &child[0]),
                           sub.pollableAsyncRV);
                 pollableAsyncRV = sub.pollableAsyncRV; // Propagate error up the tree
                 return getCompStatus(); // Dont care about success/failure of the rest of children
@@ -437,20 +439,20 @@ nixlGusliEngine::prepXfer (const nixl_xfer_op_t &op,
     const bool entire_io_1_bdev = isEntireIOto1Bdev (remote);
     const bool can_use_multi_range_optimization = (entire_io_1_bdev && has_sgl_mem);
     if (is_single_range_io) {
-        std::unique_ptr<nixlGusliBackendReqH_1bdev> req =
-            std::make_unique<nixlGusliBackendReqH_1bdev> (op);
+        std::unique_ptr<nixlGusliBackendReqHSingleBdev> req =
+            std::make_unique<nixlGusliBackendReqHSingleBdev> (op);
         req->set1Buf (gid, local[0], remote[0]);
         handle = (nixlBackendReqH *)req.release();
     } else if (can_use_multi_range_optimization) {
-        std::unique_ptr<nixlGusliBackendReqH_1bdev> req =
-            std::make_unique<nixlGusliBackendReqH_1bdev> (op);
+        std::unique_ptr<nixlGusliBackendReqHSingleBdev> req =
+            std::make_unique<nixlGusliBackendReqHSingleBdev> (op);
         const nixl_status_t rv = req->setBufs (gid, local, remote);
         if (rv != NIXL_SUCCESS)
             __LOG_RETERR (rv, "missing SGL, or SGL too small 0x%lx[b]", local[0].len);
         handle = (nixlBackendReqH *)req.release();
     } else {
-        std::unique_ptr<nixlGusliBackendReqHcompund> req =
-            std::make_unique<nixlGusliBackendReqHcompund> (op, nRanges);
+        std::unique_ptr<nixlGusliBackendReqHCompound> req =
+            std::make_unique<nixlGusliBackendReqHCompound> (op, nRanges);
         unsigned i = (has_sgl_mem ? 1 : 0); // If supplied sgl, can't use it for now, just ignore it
         __LOG_IO (req.get(),
                   "_Compound IO, 1-bdev=%d, has_sgl=%d, nSubIOs=%u",
@@ -496,6 +498,6 @@ nixlGusliEngine::checkXfer (nixlBackendReqH *handle) const {
 
 nixl_status_t
 nixlGusliEngine::releaseReqH (nixlBackendReqH *handle) const {
-    if (handle) delete ((nixlGusliBackendReqHbase *)handle);
+    delete ((nixlGusliBackendReqHbase *)handle);
     return NIXL_SUCCESS;
 }

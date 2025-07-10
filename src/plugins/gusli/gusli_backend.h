@@ -89,20 +89,12 @@ public:
     releaseReqH (nixlBackendReqH *io_handle) const override;
 
 private:
-    gusli::global_clnt_context *lib_;
-    struct bdevRefcountT { // No support for open/close so use refcount
-        gusli::bdev_info bi;
-        int ref_count;
-    };
-    std::unordered_map<uint64_t, bdevRefcountT> bdevs_; // Hash of open block devices
-    [[nodiscard]] nixl_status_t
-    bdevOpen (uint64_t devId); // open()/close() called implicitly by *registerMem()
-    [[nodiscard]] nixl_status_t
-    bdevClose (uint64_t devId);
+    std::unique_ptr<gusli::global_clnt_raii> lib_;
     [[nodiscard]] int32_t
     getGidOfBDev (uint64_t devId) const {
-        const bdevRefcountT &v = bdevs_.find (devId)->second; // Already open
-        return v.bi.bdev_descriptor;
+        gusli::backend_bdev_id bdev;
+        bdev.set_from(devId);
+        return lib_->get_bdev_descriptor(bdev);
     }
 };
 #endif

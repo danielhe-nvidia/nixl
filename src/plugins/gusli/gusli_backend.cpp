@@ -56,7 +56,6 @@ isEntireIOto1Bdev (const nixl_meta_dlist_t &remote) {
 
 nixlGusliEngine::nixlGusliEngine (const nixlBackendInitParams *nixlInit)
     : nixlBackendEngine (nixlInit) {
-    lib_ = &gusli::global_clnt_context::get();
     gusli::global_clnt_context::init_params gusli_params; // Convert nixl params to lib params
     gusli_params.log =
         stdout; // Redirect gusli logs to stdout, important errors will be printed by the plugin
@@ -70,92 +69,10 @@ nixlGusliEngine::nixlGusliEngine (const nixlBackendInitParams *nixlInit)
         if (backParams->count ("config_file") > 0)
             gusli_params.config_file = backParams->at ("config_file").c_str();
     }
-    const int rv = lib_->init (gusli_params);
-    this->initErr = (rv != 0);
-    if (this->initErr) {
-        __LOG_ERR ("Error opening driver rv=%d", rv);
-        lib_ = nullptr;
-    }
+    lib_ = std::make_unique<gusli::global_clnt_raii>(gusli_params);
 }
 
-nixlGusliEngine::~nixlGusliEngine() {
-    if (lib_) {
-        const int rv = lib_->destroy();
-        lib_ = nullptr;
-        if (rv) __LOG_ERR ("Error closing driver rv=%d", rv);
-    }
-}
-
-nixl_status_t
-nixlGusliEngine::bdevOpen (uint64_t devId) {
-    auto it = bdevs_.find (devId);
-    if (it != bdevs_.end()) {
-        bdevRefcountT &v = it->second;
-        v.ref_count++;
-        const gusli::bdev_info &i = v.bi;
-        __LOG_DBG ("Open: 0x%lx already exists[ref=%d]: fd=%d, name=%s",
-                   devId,
-                   v.ref_count,
-                   i.bdev_descriptor,
-                   i.name);
-    } else {
-        gusli::backend_bdev_id bdev;
-        bdev.set_from (devId);
-        const gusli::connect_rv rv = lib_->bdev_connect (bdev);
-        if (rv != gusli::connect_rv::C_OK)
-            __LOG_RETERR (conErrConv (rv), "connect uuid=%.16s rv=%d", bdev.uuid, (int)rv);
-        bdevRefcountT v;
-        v.ref_count = 1;
-        const gusli::bdev_info &i = v.bi;
-        lib_->bdev_get_info (bdev, &v.bi);
-        __LOG_DBG ("Open: 0x%lx {bdev uuid=%.16s, fd=%d name=%s, block_size=%u[B], #blocks=0x%lx}",
-                   devId,
-                   bdev.uuid,
-                   i.bdev_descriptor,
-                   i.name,
-                   i.block_size,
-                   i.num_total_blocks);
-        bdevs_[devId] = v;
-    }
-    return NIXL_SUCCESS;
-}
-
-nixl_status_t
-nixlGusliEngine::bdevClose (uint64_t devId) {
-    auto it = bdevs_.find (devId);
-    if (it == bdevs_.end()) {
-        __LOG_DBG ("Close: 0x%lx not oppened", devId);
-    } else {
-        bdevRefcountT &v = it->second;
-        const gusli::bdev_info &i = v.bi;
-        v.ref_count--;
-        if (v.ref_count > 0) {
-            __LOG_DBG ("Close: 0x%lx still used[ref=%d]: fd=%d, name=%s",
-                       devId,
-                       v.ref_count,
-                       i.bdev_descriptor,
-                       i.name);
-            return NIXL_SUCCESS;
-        }
-        gusli::backend_bdev_id bdev;
-        bdev.set_from (devId);
-        const gusli::connect_rv rv = lib_->bdev_disconnect (bdev);
-        if (rv != gusli::connect_rv::C_OK) {
-            v.ref_count++; // Device will not be erased from the hash so next open() / close() will
-                           // be able to pick it up and possibly close later
-            __LOG_RETERR (conErrConv (rv), "disconnect uuid=%.16s rv=%d", bdev.uuid, (int)rv);
-        }
-        __LOG_DBG ("Close: 0x%lx {bdev uuid=%.16s, fd=%d name=%s, block_size=%u[B], #blocks=0x%lx}",
-                   devId,
-                   bdev.uuid,
-                   i.bdev_descriptor,
-                   i.name,
-                   i.block_size,
-                   i.num_total_blocks);
-        bdevs_.erase (devId);
-    }
-    return NIXL_SUCCESS;
-}
+nixlGusliEngine::~nixlGusliEngine() {}
 
 class nixlGusliMemReq : public nixlBackendMD { // Register/Unregister request
 public:
@@ -191,17 +108,11 @@ nixlGusliEngine::registerMem (const nixlBlobDesc &mem,
     if (mem_type == BLK_SEG) {
         // Todo: LBA of block devices, verify size, extend volume
     } else {
-        const nixl_status_t openRv = bdevOpen (md->devId);
-        if (openRv != NIXL_SUCCESS)
-            return openRv;
-        const gusli::connect_rv rv = lib_->bdev_bufs_register (md->bdev, md->ioBufs);
+        const gusli::connect_rv rv = lib_->bufs_register (md->bdev, md->ioBufs);
         if (rv != gusli::connect_rv::C_OK) {
-            const nixl_status_t closeRv = bdevClose (md->devId);
-            // Even if close fails, nothing todo with its error code
             __LOG_RETERR (conErrConv (rv),
-                          "register buf rv=%d, closeRV=%d, [%p,0x%lx]",
+                          "register buf rv=%d, [%p,0x%lx]",
                           (int)rv,
-                          (int)closeRv,
                           (void *)mem.addr,
                           mem.len);
         }
@@ -224,14 +135,13 @@ nixlGusliEngine::deregisterMem (nixlBackendMD *_md) {
     if (md->mem_type == BLK_SEG) {
         // Nothing to do
     } else {
-        const gusli::connect_rv rv = lib_->bdev_bufs_unregist (md->bdev, md->ioBufs);
+        const gusli::connect_rv rv = lib_->bufs_unregist (md->bdev, md->ioBufs);
         if (rv != gusli::connect_rv::C_OK)
             __LOG_RETERR (conErrConv (rv),
                           "unregister buf rv=%d, [%p,0x%lx]",
                           (int)rv,
                           (void *)md->ioBufs[0].ptr,
                           md->ioBufs[0].byte_len);
-        return bdevClose (md->devId);
     }
     return NIXL_SUCCESS;
 }

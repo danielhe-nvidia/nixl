@@ -52,6 +52,19 @@ isEntireIOto1Bdev (const nixl_meta_dlist_t &remote) {
         if (devId != remote[i].devId) return false;
     return true;
 }
+class nixlGusliMemReq : public nixlBackendMD { // Register/Unregister request
+public:
+    gusli::backend_bdev_id bdev; // Gusli bdev uuid
+    uint64_t devId; // Nixl bdev uuid
+    std::vector<gusli::io_buffer_t> ioBufs;
+    nixl_mem_t mem_type;
+    nixlGusliMemReq (const nixlBlobDesc &mem, nixl_mem_t _mem_type) : nixlBackendMD (true) {
+        bdev.set_from (mem.devId);
+        devId = mem.devId;
+        mem_type = _mem_type;
+    }
+};
+
 }; // namespace
 
 nixlGusliEngine::nixlGusliEngine (const nixlBackendInitParams *nixlInit)
@@ -73,21 +86,6 @@ nixlGusliEngine::nixlGusliEngine (const nixlBackendInitParams *nixlInit)
 }
 
 nixlGusliEngine::~nixlGusliEngine() {}
-
-class nixlGusliMemReq : public nixlBackendMD { // Register/Unregister request
-public:
-    gusli::backend_bdev_id bdev; // Gusli bdev uuid
-    uint64_t devId; // Nixl bdev uuid
-    std::vector<gusli::io_buffer_t> ioBufs;
-    // std::string metadata; // Just for future, currently unused
-    nixl_mem_t mem_type;
-    nixlGusliMemReq (const nixlBlobDesc &mem, nixl_mem_t _mem_type) : nixlBackendMD (true) {
-        bdev.set_from (mem.devId);
-        devId = mem.devId;
-        // metadata = mem.metaInfo;
-        mem_type = _mem_type;
-    }
-};
 
 nixl_status_t
 nixlGusliEngine::registerMem (const nixlBlobDesc &mem,

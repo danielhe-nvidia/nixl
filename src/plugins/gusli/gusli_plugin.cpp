@@ -44,13 +44,18 @@ get_backend_options() {
     return params;
 }
 
+[[nodiscard]] nixl_mem_list_t
+get_backend_mems() {
+    return {BLK_SEG, DRAM_SEG};
+}
+
 nixlBackendPlugin plugin = {NIXL_PLUGIN_API_VERSION,
                             create_gusli_engine,
                             destroy_gusli_engine,
                             get_plugin_name,
                             get_plugin_version,
                             get_backend_options,
-                            __getSupportedGusliMems};
+                            get_backend_mems};
 } // namespace
 #ifdef STATIC_PLUGIN_GUSLI
 nixlBackendPlugin *

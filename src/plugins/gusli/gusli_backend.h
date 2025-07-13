@@ -22,11 +22,6 @@
 #include "backend/backend_engine.h"
 #include "gusli_client_api.hpp"
 
-static inline nixl_mem_list_t
-__getSupportedGusliMems (void) {
-    return {BLK_SEG, DRAM_SEG};
-}
-
 class nixlGusliEngine : public nixlBackendEngine {
 public:
     nixlGusliEngine (const nixlBackendInitParams *init_params);
@@ -49,7 +44,7 @@ public:
     }
     nixl_mem_list_t
     getSupportedMems (void) const override {
-        return __getSupportedGusliMems();
+        return {BLK_SEG, DRAM_SEG};
     }
     nixl_status_t
     connect (const std::string &remote_agent) override {

@@ -47,8 +47,8 @@ conErrConv (const gusli::connect_rv rv) {
 [[nodiscard]] bool
 isEntireIOto1Bdev (const nixl_meta_dlist_t &remote) {
     const uint64_t devId = remote[0].devId;
-    const unsigned nRanges = remote.descCount();
-    for (unsigned i = 1; i < nRanges; i++)
+    const unsigned num_ranges = remote.descCount();
+    for (unsigned i = 1; i < num_ranges; i++)
         if (devId != remote[i].devId) return false;
     return true;
 }
@@ -65,6 +65,22 @@ public:
     }
 };
 
+nixl_status_t verifyRequestParams(const nixl_xfer_op_t &op,
+                           const nixl_meta_dlist_t &local,
+                           const nixl_meta_dlist_t &remote) {
+    if (local.getType() != DRAM_SEG)
+        __LOG_RETERR (
+            NIXL_ERR_INVALID_PARAM, "Local memory type must be DRAM_SEG, got %d", local.getType());
+    if (remote.getType() != BLK_SEG)
+        __LOG_RETERR (
+            NIXL_ERR_INVALID_PARAM, "Remote memory type must be BLK_SEG, got %d", remote.getType());
+    if (local.descCount() != remote.descCount())
+        __LOG_RETERR (NIXL_ERR_INVALID_PARAM,
+                      "Mismatch in descriptor counts - local[%d] != remote[%d]",
+                      local.descCount(),
+                      remote.descCount());
+    return NIXL_SUCCESS;
+}
 }; // namespace
 
 nixlGusliEngine::nixlGusliEngine (const nixlBackendInitParams *nixlInit)
@@ -201,10 +217,10 @@ public:
     }
     nixlGusliBackendReqHSingleBdev (const nixl_xfer_op_t nixlOp, int32_t gid, const nixl_meta_dlist_t &local, const nixl_meta_dlist_t &remote) : nixlGusliBackendReqHbase (nixlOp) {
         initCommon();
-        const int nRanges = remote.descCount();
+        const int num_ranges = remote.descCount();
         gusli::io_multi_map_t *mio =
             (gusli::io_multi_map_t *)local[0].addr; // Allocate scatter gather in the first entry
-        mio->n_entries = (nRanges - 1); // First entry is the scatter gather
+        mio->n_entries = (num_ranges - 1); // First entry is the scatter gather
         if (mio->my_size() > local[0].len) {
             __LOG_ERR ("mmap of sg=0x%lx[b] > is too short=0x%lx[b], Enlarge mapping or use "
                        "shorter transfer list",
@@ -219,7 +235,7 @@ public:
                   (uint64_t)local[0].len,
                   remote[0].addr,
                   gid);
-        for (int i = 1; i < nRanges; i++) { // Skip first range
+        for (int i = 1; i < num_ranges; i++) { // Skip first range
             mio->entries[i - 1] = (gusli::io_map_t){.data =
                                                         {
                                                             .ptr = (void *)local[i].addr,
@@ -240,7 +256,7 @@ public:
     exec (void) override {
         pollableAsyncRV = gusli::io_error_codes::E_IN_TRANSFER;
         __LOG_IO (this,
-                  "start, nRanges=%u, size=%lu[KB]",
+                  "start, #ranges=%u, size=%lu[KB]",
                   io.params.num_ranges(),
                   ((long)io.params.buf_size() >> 10));
         io.submit_io();
@@ -258,13 +274,13 @@ public:
     nixlGusliBackendReqHCompound (const nixl_xfer_op_t nixlOp, unsigned nSubIOs, bool hasSglMem, const nixl_meta_dlist_t &local, const nixl_meta_dlist_t &remote, std::function<int32_t(uint64_t)> convertIdFunc)
         : nixlGusliBackendReqHbase (nixlOp) {
         child.reserve (nSubIOs);
-        const unsigned nRanges = remote.descCount();
+        const unsigned num_ranges = remote.descCount();
         unsigned i = (hasSglMem ? 1 : 0); // If supplied sgl, can't use it for now, just ignore it
         __LOG_IO (this,
                   "_Compound IO, has_sgl=%d, nSubIOs=%u",
                   hasSglMem,
-                  (nRanges - i));
-        for (; i < nRanges; i++)
+                  (num_ranges - i));
+        for (; i < num_ranges; i++)
              child.emplace_back (nixlOp, convertIdFunc(remote[i].devId), local[i], remote[i]);
     }
     ~nixlGusliBackendReqHCompound() = default;      // Will cancle all child io
@@ -308,22 +324,13 @@ nixlGusliEngine::prepXfer (const nixl_xfer_op_t &op,
                            nixlBackendReqH *&handle,
                            const nixl_opt_b_args_t *opt_args) const {
     handle = nullptr;
-    // Verify params
-    if (local.getType() != DRAM_SEG)
-        __LOG_RETERR (
-            NIXL_ERR_INVALID_PARAM, "Local memory type must be DRAM_SEG, got %d", local.getType());
-    if (remote.getType() != BLK_SEG)
-        __LOG_RETERR (
-            NIXL_ERR_INVALID_PARAM, "Remote memory type must be BLK_SEG, got %d", remote.getType());
-    if (local.descCount() != remote.descCount())
-        __LOG_RETERR (NIXL_ERR_INVALID_PARAM,
-                      "Mismatch in descriptor counts - local[%d] != remote[%d]",
-                      local.descCount(),
-                      remote.descCount());
+    nixl_status_t verifyRv = verifyRequestParams(op, local, remote);
+    if (verifyRv != NIXL_SUCCESS)
+        return verifyRv;
 
     const int32_t gid = getGidOfBDev (remote[0].devId); // First bdev for IO
-    const unsigned nRanges = remote.descCount();
-    const bool is_single_range_io = (nRanges == 1);
+    const unsigned num_ranges = remote.descCount();
+    const bool is_single_range_io = (num_ranges == 1);
     const bool has_sgl_mem =
         (opt_args && (opt_args->customParam.find ("-sgl") != std::string::npos));
     const bool entire_io_1_bdev = isEntireIOto1Bdev (remote);
@@ -335,7 +342,7 @@ nixlGusliEngine::prepXfer (const nixl_xfer_op_t &op,
         } else if (can_use_multi_range_optimization) {
             req = std::make_unique<nixlGusliBackendReqHSingleBdev> (op, gid, local, remote);
         } else {
-            req = std::make_unique<nixlGusliBackendReqHCompound> (op, nRanges, has_sgl_mem, local, remote,
+            req = std::make_unique<nixlGusliBackendReqHCompound> (op, num_ranges, has_sgl_mem, local, remote,
                 [this](uint64_t devId) { return this->getGidOfBDev(devId); }
             );
         }
@@ -348,7 +355,7 @@ nixlGusliEngine::prepXfer (const nixl_xfer_op_t &op,
               (is_single_range_io || can_use_multi_range_optimization),
               entire_io_1_bdev,
               has_sgl_mem,
-              nRanges,
+              num_ranges,
               opt_args,
               opt_args->customParam.c_str());
     return NIXL_SUCCESS;

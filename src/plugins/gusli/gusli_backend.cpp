@@ -57,11 +57,11 @@ public:
     gusli::backend_bdev_id bdev; // Gusli bdev uuid
     uint64_t devId; // Nixl bdev uuid
     std::vector<gusli::io_buffer_t> ioBufs;
-    nixl_mem_t mem_type;
-    nixlGusliMemReq (const nixlBlobDesc &mem, nixl_mem_t _mem_type) : nixlBackendMD (true) {
+    nixl_mem_t memType;
+    nixlGusliMemReq (const nixlBlobDesc &mem, nixl_mem_t mem_type) : nixlBackendMD (true) {
         bdev.set_from (mem.devId);
         devId = mem.devId;
-        mem_type = _mem_type;
+        memType = mem_type;
     }
 };
 
@@ -93,10 +93,9 @@ nixlGusliEngine::registerMem (const nixlBlobDesc &mem,
                               nixlBackendMD *&out) {
     out = nullptr;
     if ((mem_type != DRAM_SEG) && (mem_type != BLK_SEG))
-        __LOG_RETERR (
-            NIXL_ERR_NOT_SUPPORTED, "type not supported %d!=%d", (int)mem_type, (int)DRAM_SEG);
+        return NIXL_ERR_NOT_SUPPORTED;
     std::unique_ptr<nixlGusliMemReq> md = std::make_unique<nixlGusliMemReq> (mem, mem_type);
-    __LOG_DBG ("register dev[0x%lx].ram_lba[%p].len=0x%lx, mem_type=%u, md=%s",
+    __LOG_DBG ("register dev[0x%lx].ram_lba[%p].len=0x%lx, type=%u, md=%s",
                mem.devId,
                (void *)mem.addr,
                mem.len,
@@ -125,12 +124,12 @@ nixlGusliEngine::deregisterMem (nixlBackendMD *_md) {
     if (!md) __LOG_RETERR (NIXL_ERR_INVALID_PARAM, "md==null");
     std::unique_ptr<nixlGusliMemReq> auto_deleter =
         std::unique_ptr<nixlGusliMemReq> (md); // Regardless of the outcome: md should be deleted
-    __LOG_DBG ("unregister dev[0x%lx].ram_lba[%p].len=0x%lx, mem_type=%u",
+    __LOG_DBG ("unregister dev[0x%lx].ram_lba[%p].len=0x%lx, type=%u",
                md->devId,
                (void *)md->ioBufs[0].ptr,
                md->ioBufs[0].byte_len,
-               md->mem_type);
-    if (md->mem_type == BLK_SEG) {
+               md->memType);
+    if (md->memType == BLK_SEG) {
         // Nothing to do
     } else {
         const gusli::connect_rv rv = lib_->bufs_unregist (md->bdev, md->ioBufs);

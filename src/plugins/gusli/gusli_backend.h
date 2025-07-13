@@ -24,74 +24,74 @@
 
 class nixlGusliEngine : public nixlBackendEngine {
 public:
-    nixlGusliEngine (const nixlBackendInitParams *init_params);
+    nixlGusliEngine(const nixlBackendInitParams *init_params);
     ~nixlGusliEngine();
     bool
-    supportsNotif (void) const override {
+    supportsNotif(void) const override {
         return false;
     }
     bool
-    supportsRemote (void) const override {
+    supportsRemote(void) const override {
         return false;
     }
     bool
-    supportsLocal (void) const override {
+    supportsLocal(void) const override {
         return true;
     }
     bool
-    supportsProgTh (void) const override {
+    supportsProgTh(void) const override {
         return false;
     }
     nixl_mem_list_t
-    getSupportedMems (void) const override {
+    getSupportedMems(void) const override {
         return {BLK_SEG, DRAM_SEG};
     }
     nixl_status_t
-    connect (const std::string &remote_agent) override {
+    connect(const std::string &remote_agent) override {
         return NIXL_SUCCESS;
     }
     nixl_status_t
-    disconnect (const std::string &remote_agent) override {
+    disconnect(const std::string &remote_agent) override {
         return NIXL_SUCCESS;
     }
     nixl_status_t
-    loadLocalMD (nixlBackendMD *in, nixlBackendMD *&out) override {
+    loadLocalMD(nixlBackendMD *in, nixlBackendMD *&out) override {
         out = in;
         return NIXL_SUCCESS;
     }
     nixl_status_t
-    unloadMD (nixlBackendMD *input) override {
+    unloadMD(nixlBackendMD *input) override {
         return NIXL_SUCCESS;
     }
     [[nodiscard]] nixl_status_t
-    registerMem (const nixlBlobDesc &mem, const nixl_mem_t &nixl_mem, nixlBackendMD *&out) override;
+    registerMem(const nixlBlobDesc &mem, const nixl_mem_t &nixl_mem, nixlBackendMD *&out) override;
     [[nodiscard]] nixl_status_t
-    deregisterMem (nixlBackendMD *out) override;
+    deregisterMem(nixlBackendMD *out) override;
 
     [[nodiscard]] nixl_status_t
-    prepXfer (const nixl_xfer_op_t &operation,
-              const nixl_meta_dlist_t &local,
-              const nixl_meta_dlist_t &remote,
-              const std::string &remote_agent,
-              nixlBackendReqH *&io_handle,
-              const nixl_opt_b_args_t *opt_args = nullptr) const override;
+    prepXfer(const nixl_xfer_op_t &operation,
+             const nixl_meta_dlist_t &local,
+             const nixl_meta_dlist_t &remote,
+             const std::string &remote_agent,
+             nixlBackendReqH *&io_handle,
+             const nixl_opt_b_args_t *opt_args = nullptr) const override;
 
     [[nodiscard]] nixl_status_t
-    postXfer (const nixl_xfer_op_t &operation,
-              const nixl_meta_dlist_t &local,
-              const nixl_meta_dlist_t &remote,
-              const std::string &remote_agent,
-              nixlBackendReqH *&io_handle,
-              const nixl_opt_b_args_t *opt_args = nullptr) const override;
+    postXfer(const nixl_xfer_op_t &operation,
+             const nixl_meta_dlist_t &local,
+             const nixl_meta_dlist_t &remote,
+             const std::string &remote_agent,
+             nixlBackendReqH *&io_handle,
+             const nixl_opt_b_args_t *opt_args = nullptr) const override;
     [[nodiscard]] nixl_status_t
-    checkXfer (nixlBackendReqH *io_handle) const override;
+    checkXfer(nixlBackendReqH *io_handle) const override;
     [[nodiscard]] nixl_status_t
-    releaseReqH (nixlBackendReqH *io_handle) const override;
+    releaseReqH(nixlBackendReqH *io_handle) const override;
 
 private:
     std::unique_ptr<gusli::global_clnt_raii> lib_;
     [[nodiscard]] int32_t
-    getGidOfBDev (uint64_t devId) const {
+    getGidOfBDev(uint64_t devId) const {
         gusli::backend_bdev_id bdev;
         bdev.set_from(devId);
         return lib_->get_bdev_descriptor(bdev);

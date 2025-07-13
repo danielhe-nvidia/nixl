@@ -20,11 +20,11 @@
 
 namespace {
 [[nodiscard]] nixlBackendEngine *
-create_gusli_engine (const nixlBackendInitParams *init_params) {
-    return new nixlGusliEngine (init_params);
+create_gusli_engine(const nixlBackendInitParams *init_params) {
+    return new nixlGusliEngine(init_params);
 }
 void
-destroy_gusli_engine (nixlBackendEngine *engine) {
+destroy_gusli_engine(nixlBackendEngine *engine) {
     delete engine;
 }
 [[nodiscard]] const char *

@@ -83,6 +83,7 @@ nixlGusliEngine::nixlGusliEngine (const nixlBackendInitParams *nixlInit)
             gusli_params.config_file = backParams->at ("config_file").c_str();
     }
     lib_ = std::make_unique<gusli::global_clnt_raii>(gusli_params);
+    assert(lib_->BREAKING_VERSION == 1);
 }
 
 nixlGusliEngine::~nixlGusliEngine() {}
@@ -176,25 +177,18 @@ protected:
 
 class nixlGusliBackendReqHSingleBdev : public nixlGusliBackendReqHbase {
     gusli::io_request io; // gusli executor of 1 io
-    static void
-    completionCallback (nixlGusliBackendReqHSingleBdev *c) {
-        __LOG_IO (c, "_doneCB, rv=%d", c->io.get_error());
-        c->pollableAsyncRV =
-            c->io.get_error(); // Must be last line because once set, class can be destroyed
-    }
-
-public:
-    nixlGusliBackendReqHSingleBdev (const nixl_xfer_op_t _op) : nixlGusliBackendReqHbase (_op) {
-        io.params.set_completion (this, completionCallback);
+    void initCommon(void) {
+        io.params.set_async_pollable();
         io.params.op = op;
     }
+public:
     ~nixlGusliBackendReqHSingleBdev() {
         (void)io.try_cancel(); // If io was completed - meaningless, otherwise if io is in air,
                                // cancel it so 'io' field can be free. dont care about return value
                                // because io will get free anyways
     }
-    void
-    set1Buf (int32_t gid, const nixlMetaDesc &local, const nixlMetaDesc &remote) {
+    nixlGusliBackendReqHSingleBdev (const nixl_xfer_op_t nixlOp, int32_t gid, const nixlMetaDesc &local, const nixlMetaDesc &remote) : nixlGusliBackendReqHbase (nixlOp) {
+        initCommon();
         io.params.init_1_rng (
             op, gid, (uint64_t)remote.addr, (uint64_t)local.len, (void *)local.addr);
         __LOG_IO (this,
@@ -205,8 +199,8 @@ public:
                   (uint64_t)remote.addr,
                   gid);
     }
-    [[nodiscard]] nixl_status_t
-    setBufs (int32_t gid, const nixl_meta_dlist_t &local, const nixl_meta_dlist_t &remote) {
+    nixlGusliBackendReqHSingleBdev (const nixl_xfer_op_t nixlOp, int32_t gid, const nixl_meta_dlist_t &local, const nixl_meta_dlist_t &remote) : nixlGusliBackendReqHbase (nixlOp) {
+        initCommon();
         const int nRanges = remote.descCount();
         gusli::io_multi_map_t *mio =
             (gusli::io_multi_map_t *)local[0].addr; // Allocate scatter gather in the first entry
@@ -216,7 +210,7 @@ public:
                        "shorter transfer list",
                        mio->my_size(),
                        local[0].len);
-            return NIXL_ERR_INVALID_PARAM;
+            throw std::runtime_error("Failed to initialize io, See log");
         }
         __LOG_IO (this,
                   ".SGL: dev=%d, %p, 0x%lx[b], lba=0x%lx, gid=%d",
@@ -240,13 +234,7 @@ public:
                       remote[i].addr,
                       i);
         }
-        if (false && (mio->n_entries > 64)) { // I did not measure this number to opimize it, Not sure why getting (Operation not permitted) in NIXL container
-            io.params.try_using_uring_api = true; // More efficient for long range io's.
-            io.params.set_async_pollable(); // Uring support is faster as polling without callback
-            __LOG_IO (this, ".URING");
-        }
         io.params.init_multi (op, gid, *mio);
-        return NIXL_SUCCESS;
     }
     [[nodiscard]] nixl_status_t
     exec (void) override {
@@ -260,28 +248,26 @@ public:
     }
     [[nodiscard]] nixl_status_t
     pollStatus (void) override {
-        if (!io.has_callback()) // Callback will update pollable rv
-            pollableAsyncRV = io.get_error();
+        pollableAsyncRV = io.get_error();
         return getCompStatus();
     }
 };
 class nixlGusliBackendReqHCompound : public nixlGusliBackendReqHbase {
-    std::vector<class nixlGusliBackendReqHSingleBdev>
-        child; // Array of sub completions.
+    std::vector<class nixlGusliBackendReqHSingleBdev> child;
 public:
-    nixlGusliBackendReqHCompound (const nixl_xfer_op_t _op, unsigned nSubIOs)
-        : nixlGusliBackendReqHbase (_op) {
+    nixlGusliBackendReqHCompound (const nixl_xfer_op_t nixlOp, unsigned nSubIOs, bool hasSglMem, const nixl_meta_dlist_t &local, const nixl_meta_dlist_t &remote, std::function<int32_t(uint64_t)> convertIdFunc)
+        : nixlGusliBackendReqHbase (nixlOp) {
         child.reserve (nSubIOs);
+        const unsigned nRanges = remote.descCount();
+        unsigned i = (hasSglMem ? 1 : 0); // If supplied sgl, can't use it for now, just ignore it
+        __LOG_IO (this,
+                  "_Compound IO, has_sgl=%d, nSubIOs=%u",
+                  hasSglMem,
+                  (nRanges - i));
+        for (; i < nRanges; i++)
+             child.emplace_back (nixlOp, convertIdFunc(remote[i].devId), local[i], remote[i]);
     }
     ~nixlGusliBackendReqHCompound() = default;      // Will cancle all child io
-    void
-    addSubIO (const nixl_xfer_op_t _op,
-              int32_t gid,
-              const nixlMetaDesc &local,
-              const nixlMetaDesc &remote) {
-        auto &sub = child.emplace_back (_op);
-        sub.set1Buf (gid, local, remote);
-    }
     [[nodiscard]] nixl_status_t
     exec (void) override {
         pollableAsyncRV = gusli::io_error_codes::E_IN_TRANSFER;
@@ -323,9 +309,6 @@ nixlGusliEngine::prepXfer (const nixl_xfer_op_t &op,
                            const nixl_opt_b_args_t *opt_args) const {
     handle = nullptr;
     // Verify params
-    // if (strcmp(remote_agent.c_str(), gusli_params.client_name))
-    // __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "Remote(%s) != localAgent(%s)", remote_agent.c_str(),
-    // gusli_params.client_name);
     if (local.getType() != DRAM_SEG)
         __LOG_RETERR (
             NIXL_ERR_INVALID_PARAM, "Local memory type must be DRAM_SEG, got %d", local.getType());
@@ -345,30 +328,20 @@ nixlGusliEngine::prepXfer (const nixl_xfer_op_t &op,
         (opt_args && (opt_args->customParam.find ("-sgl") != std::string::npos));
     const bool entire_io_1_bdev = isEntireIOto1Bdev (remote);
     const bool can_use_multi_range_optimization = (entire_io_1_bdev && has_sgl_mem);
-    if (is_single_range_io) {
-        std::unique_ptr<nixlGusliBackendReqHSingleBdev> req =
-            std::make_unique<nixlGusliBackendReqHSingleBdev> (op);
-        req->set1Buf (gid, local[0], remote[0]);
+    std::unique_ptr<nixlGusliBackendReqHbase> req;
+    try {
+        if (is_single_range_io) {
+            req = std::make_unique<nixlGusliBackendReqHSingleBdev> (op, gid, local[0], remote[0]);
+        } else if (can_use_multi_range_optimization) {
+            req = std::make_unique<nixlGusliBackendReqHSingleBdev> (op, gid, local, remote);
+        } else {
+            req = std::make_unique<nixlGusliBackendReqHCompound> (op, nRanges, has_sgl_mem, local, remote,
+                [this](uint64_t devId) { return this->getGidOfBDev(devId); }
+            );
+        }
         handle = (nixlBackendReqH *)req.release();
-    } else if (can_use_multi_range_optimization) {
-        std::unique_ptr<nixlGusliBackendReqHSingleBdev> req =
-            std::make_unique<nixlGusliBackendReqHSingleBdev> (op);
-        const nixl_status_t rv = req->setBufs (gid, local, remote);
-        if (rv != NIXL_SUCCESS)
-            __LOG_RETERR (rv, "missing SGL, or SGL too small 0x%lx[b]", local[0].len);
-        handle = (nixlBackendReqH *)req.release();
-    } else {
-        std::unique_ptr<nixlGusliBackendReqHCompound> req =
-            std::make_unique<nixlGusliBackendReqHCompound> (op, nRanges);
-        unsigned i = (has_sgl_mem ? 1 : 0); // If supplied sgl, can't use it for now, just ignore it
-        __LOG_IO (req.get(),
-                  "_Compound IO, 1-bdev=%d, has_sgl=%d, nSubIOs=%u",
-                  entire_io_1_bdev,
-                  has_sgl_mem,
-                  (nRanges - i));
-        for (; i < nRanges; i++)
-            req->addSubIO (op, getGidOfBDev (remote[i].devId), local[i], remote[i]);
-        handle = (nixlBackendReqH *)req.release();
+    } catch (const std::exception& e) {
+        __LOG_RETERR(NIXL_ERR_INVALID_PARAM, "missing SGL, or SGL too small 0x%lx[b], info=%s", local[0].len, e.what());
     }
     __LOG_IO ((nixlGusliBackendReqHbase *)handle,
               "HDR: 1-gio=%d, 1-bdev=%d, has_sgl=%d, vec_size=%u, opt=%p cust=%s",

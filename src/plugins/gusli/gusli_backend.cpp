@@ -197,12 +197,6 @@ protected:
 };
 
 class nixlGusliBackendReqHSingleBdev : public nixlGusliBackendReqHbase {
-    gusli::io_request io; // gusli executor of 1 io
-    void
-    initCommon(void) {
-        io.params.set(op).set_priority(100).set_async_pollable();
-    }
-
 public:
     nixlGusliBackendReqHSingleBdev(const nixl_xfer_op_t nixlOp,
                                    int32_t gid,
@@ -280,10 +274,16 @@ public:
         pollableAsyncRV = io.get_error();
         return getCompStatus();
     }
-};
-class nixlGusliBackendReqHCompound : public nixlGusliBackendReqHbase {
-    std::vector<class nixlGusliBackendReqHSingleBdev> child;
 
+ private:
+    gusli::io_request io; // gusli executor of 1 io
+    void
+    initCommon(void) {
+        io.params.set(op).set_priority(100).set_async_pollable();
+    }
+};
+
+class nixlGusliBackendReqHCompound : public nixlGusliBackendReqHbase {
 public:
     nixlGusliBackendReqHCompound(const nixl_xfer_op_t nixlOp,
                                  unsigned nSubIOs,
@@ -300,7 +300,7 @@ public:
             child.emplace_back(nixlOp, convertIdFunc(remote[i].devId), local[i], remote[i]);
     }
 
-    ~nixlGusliBackendReqHCompound() override = default; // Will cancle all child io
+    ~nixlGusliBackendReqHCompound() override = default;
 
     [[nodiscard]] nixl_status_t
     exec(void) override {
@@ -333,6 +333,9 @@ public:
         pollableAsyncRV = gusli::io_error_codes::E_OK;
         return getCompStatus();
     }
+
+ private:
+    std::vector<nixlGusliBackendReqHSingleBdev> child;
 };
 
 nixl_status_t

@@ -59,6 +59,7 @@ public:
     uint64_t devId; // Nixl bdev uuid
     std::vector<gusli::io_buffer_t> ioBufs;
     nixl_mem_t memType;
+
     nixlGusliMemReq(const nixlBlobDesc &mem, nixl_mem_t mem_type) : nixlBackendMD(true) {
         bdev.set_from(mem.devId);
         devId = mem.devId;
@@ -174,10 +175,12 @@ public:
     exec(void) = 0;
     [[nodiscard]] virtual nixl_status_t
     pollStatus(void) = 0;
+
     nixlGusliBackendReqHbase(const nixl_xfer_op_t _op)
         : op((_op == NIXL_WRITE) ? gusli::G_WRITE : gusli::G_READ) {
         __LOG_IO(this, "_prep");
     }
+
     virtual ~nixlGusliBackendReqHbase() {
         __LOG_IO(this, "_free");
     }
@@ -201,11 +204,6 @@ class nixlGusliBackendReqHSingleBdev : public nixlGusliBackendReqHbase {
     }
 
 public:
-    ~nixlGusliBackendReqHSingleBdev() {
-        (void)io.try_cancel(true); // If io was completed - meaningless, otherwise if io is in air,
-                               // cancel it so 'io' field can be free. dont care about return value
-                               // because io will get free anyways
-    }
     nixlGusliBackendReqHSingleBdev(const nixl_xfer_op_t nixlOp,
                                    int32_t gid,
                                    const nixlMetaDesc &local,
@@ -215,13 +213,14 @@ public:
         io.params.init_1_rng(
             op, gid, (uint64_t)remote.addr, (uint64_t)local.len, (void *)local.addr);
         __LOG_IO(this,
-                 ".RNG1: dev=%d, %p, 0x%lx[b], lba=0x%lx, gid=%d",
+                 ".RNG1: dev=%d, %p, 0x%zx[b], lba=0x%lx, gid=%d",
                  remote.devId,
                  (void *)local.addr,
-                 (uint64_t)local.len,
-                 (uint64_t)remote.addr,
+                 local.len,
+                 remote.addr,
                  gid);
     }
+
     nixlGusliBackendReqHSingleBdev(const nixl_xfer_op_t nixlOp,
                                    int32_t gid,
                                    const nixl_meta_dlist_t &local,
@@ -231,7 +230,7 @@ public:
         const int num_ranges = remote.descCount();
         gusli::io_multi_map_t *mio =
             (gusli::io_multi_map_t *)local[0].addr; // Allocate scatter gather in the first entry
-        mio->n_entries = (num_ranges - 1); // First entry is the scatter gather
+        mio->init_num_entries(num_ranges - 1); // First entry is the scatter gather
         if (mio->my_size() > local[0].len) {
             __LOG_ERR("mmap of sg=0x%lx[b] > is too short=0x%lx[b], Enlarge mapping or use "
                       "shorter transfer list",
@@ -240,29 +239,31 @@ public:
             throw std::runtime_error("Failed to initialize io, See log");
         }
         __LOG_IO(this,
-                 ".SGL: dev=%d, %p, 0x%lx[b], lba=0x%lx, gid=%d",
+                 ".SGL: dev=%d, %p, 0x%zx[b], lba=0x%lx, gid=%d",
                  remote[0].devId,
                  mio,
-                 (uint64_t)local[0].len,
+                 local[0].len,
                  remote[0].addr,
                  gid);
         for (int i = 1; i < num_ranges; i++) { // Skip first range
-            mio->entries[i - 1] = (gusli::io_map_t){.data =
-                                                        {
-                                                            .ptr = (void *)local[i].addr,
-                                                            .byte_len = (uint64_t)local[i].len,
-                                                        },
-                                                    .offset_lba_bytes = (uint64_t)remote[i].addr};
+            mio->entries[i - 1].init((void *)local[i].addr, local[i].len, remote[i].addr);
             __LOG_IO(this,
-                     ".RNG: dev=%d, %p, 0x%lx[b], lba=0x%lx, idx=%u",
+                     ".RNG: dev=%d, %p, 0x%zx[b], lba=0x%lx, idx=%u",
                      remote[i].devId,
                      (void *)local[i].addr,
-                     (uint64_t)local[i].len,
+                     local[i].len,
                      remote[i].addr,
                      i);
         }
         io.params.init_multi(op, gid, *mio);
     }
+
+    ~nixlGusliBackendReqHSingleBdev() override {
+        (void)io.try_cancel(true); // If io was completed - meaningless, otherwise if io is in air,
+                               // cancel it so 'io' field can be free. dont care about return value
+                               // because io will get free anyways
+    }
+
     [[nodiscard]] nixl_status_t
     exec(void) override {
         pollableAsyncRV = gusli::io_error_codes::E_IN_TRANSFER;
@@ -273,6 +274,7 @@ public:
         io.submit_io();
         return NIXL_IN_PROG;
     }
+
     [[nodiscard]] nixl_status_t
     pollStatus(void) override {
         pollableAsyncRV = io.get_error();
@@ -297,7 +299,9 @@ public:
         for (; i < num_ranges; i++)
             child.emplace_back(nixlOp, convertIdFunc(remote[i].devId), local[i], remote[i]);
     }
-    ~nixlGusliBackendReqHCompound() = default; // Will cancle all child io
+
+    ~nixlGusliBackendReqHCompound() override = default; // Will cancle all child io
+
     [[nodiscard]] nixl_status_t
     exec(void) override {
         pollableAsyncRV = gusli::io_error_codes::E_IN_TRANSFER;
@@ -306,6 +310,7 @@ public:
             (void)sub.exec(); // We know that return value is in progress
         return NIXL_IN_PROG;
     }
+
     [[nodiscard]] nixl_status_t
     pollStatus(void) override {
         if (pollableAsyncRV != gusli::io_error_codes::E_IN_TRANSFER)

@@ -249,7 +249,7 @@ public:
     }
 
 #define QUIT_ON_ERR(msg, status)                                                             \
-    {                                                                                        \
+    do {                                                                                        \
         if (status < NIXL_SUCCESS) {                                                         \
             err_log << "Error: " << msg << nixlEnumStrings::statusStr (status) << std::endl; \
             if (treq) agent.releaseXferReq (treq);                                           \
@@ -363,6 +363,20 @@ public:
         nixl_status_t status;
         status = agent.createBackend ("GUSLI", params, n_backend);
         QUIT_ON_ERR ("Backend Creation Failed: ", status);
+
+        if (1) {
+            print_segment_title (phase_title ("Failed Second plugin initialization"));
+            nixlBackendH *_2nd_plugin = nullptr;
+            nixlAgent agent2 ("2nd_agent", nixlAgentConfig (true));
+            bool init_exception_cought = false;
+            try {
+                status = agent2.createBackend ("GUSLI", params, n_backend);
+            } catch (const std::runtime_error& e) {
+                init_exception_cought = true;
+            }
+            assert(_2nd_plugin == nullptr);
+            assert(init_exception_cought);
+        }
 
         print_segment_title (phase_title (absl::StrFormat ("Allocating buffers, bdev %u", UUID_LOCAL_FILE_0)));
         if (posix_memalign (&ptr, page_size, get_total_mem_useage()) != 0)

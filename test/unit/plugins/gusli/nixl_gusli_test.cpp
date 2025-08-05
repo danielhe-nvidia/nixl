@@ -108,6 +108,7 @@ private:
     void *ptr; // Registered mem RAM buffer for ios
     nixlXferReqH *treq = nullptr; // io request
     test_pattern_t test_pattern;
+    size_t get_total_mem_useage(void) const { return n_total_mapped_bytes + sg_buf_size; }
     static std::string
     center_str (const std::string &str) {
         return std::string ((line_width - str.length()) / 2, ' ') + str;
@@ -266,7 +267,7 @@ public:
         nixlBlobDesc d;
         nixl_status_t status;
         d.devId = 0;
-        d.len = n_total_mapped_bytes + sg_buf_size;
+        d.len = get_total_mem_useage();
         d.addr = (uintptr_t)ptr;
         dram_reg.addDesc (d);
         d.addr = bdev_byte_offset;
@@ -352,8 +353,9 @@ public:
         out_log << absl::StrFormat ("- Number of transfers=%d\n", num_transfers);
         out_log << absl::StrFormat (
             "- Transfer=%zu[KB], sg=%zu[KB]\n", (transfer_size >> 10), (sg_buf_size >> 10));
-        out_log << absl::StrFormat ("- Total data: %.2f[GB]\n",
-                                    float (n_total_mapped_bytes) / gb_size);
+        out_log << absl::StrFormat ("- Total data: %.2f[GB], 0x%lx[B]\n",
+                                    float (n_total_mapped_bytes) / gb_size,
+                                    get_total_mem_useage());
         out_log << absl::StrFormat ("- Backend: GUSLI, Direct IO enabled\n") << line_str;
 
         // Create GUSLI backend first - before allocating any resources
@@ -362,8 +364,8 @@ public:
         status = agent.createBackend ("GUSLI", params, n_backend);
         QUIT_ON_ERR ("Backend Creation Failed: ", status);
 
-        print_segment_title (phase_title ("Allocating buffers, bdev " + UUID_LOCAL_FILE_0));
-        if (posix_memalign (&ptr, page_size, n_total_mapped_bytes + sg_buf_size) != 0)
+        print_segment_title (phase_title (absl::StrFormat ("Allocating buffers, bdev %u", UUID_LOCAL_FILE_0)));
+        if (posix_memalign (&ptr, page_size, get_total_mem_useage()) != 0)
             QUIT_ON_ERR ("DRAM allocation failed", NIXL_ERR_NOT_SUPPORTED);
         nixl_xfer_dlist_t bdev_io_src (DRAM_SEG), bdev_io_dst (BLK_SEG);
         single_bdev_request_build (bdev_io_src, bdev_io_dst, true);
@@ -591,5 +593,7 @@ main (int argc, char *argv[]) {
     }
     gtest base_test (num_transfers, transfer_size);
     const int rv = base_test.run_write_read_verify();
+    //out_log << absl::StrFormat ("agent destroyed. test_rv=%d\n", rv);
+    //out_log.flush();
     return rv;
 }

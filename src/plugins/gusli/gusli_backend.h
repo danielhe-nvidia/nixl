@@ -89,12 +89,12 @@ public:
     releaseReqH(nixlBackendReqH *io_handle) const override;
 
 private:
-    std::unique_ptr<gusli::global_clnt_raii> lib_;
+    std::unique_ptr<gusli::global_clnt_context> lib_;
     [[nodiscard]] int32_t
     getGidOfBDev(uint64_t devId) const {
         gusli::backend_bdev_id bdev;
         bdev.set_from(devId);
-        return lib_->get_bdev_descriptor(bdev);
+        return lib_->bdev_get_descriptor(bdev);
     }
 };
 #endif

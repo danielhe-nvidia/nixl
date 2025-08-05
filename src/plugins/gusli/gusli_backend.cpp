@@ -52,6 +52,7 @@ isEntireIOto1Bdev(const nixl_meta_dlist_t &remote) {
         if (devId != remote[i].devId) return false;
     return true;
 }
+
 class nixlGusliMemReq : public nixlBackendMD { // Register/Unregister request
 public:
     gusli::backend_bdev_id bdev; // Gusli bdev uuid
@@ -99,8 +100,8 @@ nixlGusliEngine::nixlGusliEngine(const nixlBackendInitParams *nixlInit)
         if (backParams->count("config_file") > 0)
             gusli_params.config_file = backParams->at("config_file").c_str();
     }
-    lib_ = std::make_unique<gusli::global_clnt_raii>(gusli_params);
-    assert(lib_->BREAKING_VERSION == 1);
+    lib_ = std::make_unique<gusli::global_clnt_context>(gusli_params);
+    NIXL_ASSERT_ALWAYS(lib_->BREAKING_VERSION == 1);
 }
 
 nixlGusliEngine::~nixlGusliEngine() {}
@@ -111,6 +112,7 @@ nixlGusliEngine::registerMem(const nixlBlobDesc &mem,
                              nixlBackendMD *&out) {
     out = nullptr;
     if ((mem_type != DRAM_SEG) && (mem_type != BLK_SEG)) return NIXL_ERR_NOT_SUPPORTED;
+
     std::unique_ptr<nixlGusliMemReq> md = std::make_unique<nixlGusliMemReq>(mem, mem_type);
     __LOG_DBG("register dev[0x%lx].ram_lba[%p].len=0x%lx, type=%u, md=%s",
               mem.devId,
@@ -122,7 +124,7 @@ nixlGusliEngine::registerMem(const nixlBlobDesc &mem,
     if (mem_type == BLK_SEG) {
         // Todo: LBA of block devices, verify size, extend volume
     } else {
-        const gusli::connect_rv rv = lib_->bufs_register(md->bdev, md->ioBufs);
+        const gusli::connect_rv rv = lib_->open__bufs_register(md->bdev, md->ioBufs);
         if (rv != gusli::connect_rv::C_OK) {
             __LOG_RETERR(conErrConv(rv),
                          "register buf rv=%d, [%p,0x%lx]",
@@ -149,7 +151,7 @@ nixlGusliEngine::deregisterMem(nixlBackendMD *_md) {
     if (md->memType == BLK_SEG) {
         // Nothing to do
     } else {
-        const gusli::connect_rv rv = lib_->bufs_unregist(md->bdev, md->ioBufs);
+        const gusli::connect_rv rv = lib_->close_bufs_unregist(md->bdev, md->ioBufs);
         if (rv != gusli::connect_rv::C_OK)
             __LOG_RETERR(conErrConv(rv),
                          "unregister buf rv=%d, [%p,0x%lx]",
@@ -195,13 +197,12 @@ class nixlGusliBackendReqHSingleBdev : public nixlGusliBackendReqHbase {
     gusli::io_request io; // gusli executor of 1 io
     void
     initCommon(void) {
-        io.params.set_async_pollable();
-        io.params.op = op;
+        io.params.set(op).set_priority(100).set_async_pollable();
     }
 
 public:
     ~nixlGusliBackendReqHSingleBdev() {
-        (void)io.try_cancel(); // If io was completed - meaningless, otherwise if io is in air,
+        (void)io.try_cancel(true); // If io was completed - meaningless, otherwise if io is in air,
                                // cancel it so 'io' field can be free. dont care about return value
                                // because io will get free anyways
     }

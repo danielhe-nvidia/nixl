@@ -197,20 +197,20 @@ public:
 
 // Add gusli specific params
 #ifndef __stringify
-#define __stringify_1(x...) #x
-#define __stringify(x...) __stringify_1 (x)
+    #define __stringify_1(x...) #x
+    #define __stringify(x...) __stringify_1 (x)
 #endif
 #define UUID_LOCAL_FILE_0 11 // Just some numbers
 #define UUID_K_DEV_ZERO_1 14
 #define UUID_NVME_DISK__0 27
+        gusli::client_config_file conf(1 /*Version*/);
+        using gsc = gusli::bdev_config_params;
+        conf.bdev_add(gsc(__stringify (UUID_LOCAL_FILE_0), gsc::bdev_type::DEV_FS_FILE,    "./store0.bin", "sec=0x03", 0, gsc::connect_how::SHARED_RW));
+        conf.bdev_add(gsc(__stringify (UUID_K_DEV_ZERO_1), gsc::bdev_type::DEV_BLK_KERNEL, "/dev/zero",    "sec=0x71", 0, gsc::connect_how::EXCLUSIVE_RW));
+        conf.bdev_add(gsc(__stringify (UUID_NVME_DISK__0), gsc::bdev_type::DEV_BLK_KERNEL, "/dev/nvme0n1", "sec=0x07", 1, gsc::connect_how::EXCLUSIVE_RW));
+        p.config_file = conf.get();
         params["client_name"] = agent_name;
-        params["config_file"] =
-            "# version=1, bdevs: UUID-16b, type, attach_op, direct, path, "
-            "security_cookie\n" __stringify (
-                UUID_LOCAL_FILE_0) " f W N ./store0.bin sec=0x3\n" // Local file in non direct mode
-            __stringify (
-                UUID_K_DEV_ZERO_1) " K X N /dev/zero   sec=0x71\n" // /dev/zero in non direct mode
-            __stringify (UUID_NVME_DISK__0) " K X D /dev/nvme0n1 sec=0x7\n"; // NVME in direct mode
+        params["config_file"] = conf.get();
         params["max_num_simultaneous_requests"] = std::to_string (256);
         return params;
     }

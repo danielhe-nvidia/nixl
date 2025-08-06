@@ -192,6 +192,7 @@ protected:
         if (rv == gusli::io_error_codes::E_OK) return NIXL_SUCCESS;
         if (rv == gusli::io_error_codes::E_IN_TRANSFER) return NIXL_IN_PROG;
         if (rv == gusli::io_error_codes::E_INVAL_PARAMS) return NIXL_ERR_INVALID_PARAM;
+        if (rv == gusli::io_error_codes::E_THROTTLE_RETRY_LATER) return NIXL_ERR_NOT_ALLOWED;
         __LOG_RETERR(NIXL_ERR_BACKEND, "IO[%c%p], io exec error rv=%d", op, this, (int)rv);
     }
 };
@@ -253,9 +254,8 @@ public:
     }
 
     ~nixlGusliBackendReqHSingleBdev() override {
-        (void)io.try_cancel(true); // If io was completed - meaningless, otherwise if io is in air,
-                               // cancel it so 'io' field can be free. dont care about return value
-                               // because io will get free anyways
+        io.done();
+        // If io was completed - meaningless, otherwise if io is in air, Gusli will auto cancel it
     }
 
     [[nodiscard]] nixl_status_t

@@ -177,7 +177,7 @@ public:
 
     nixl_b_params_t
     gen_gusli_plugin_params (const nixlAgent &agent)
-        const { // Set up backend parameters for gusli::global_clnt_context::init_params
+        const { // Set up backend parameters
         // Get default params / supported mem
         nixl_b_params_t params;
         nixl_mem_list_t mems1;
@@ -197,21 +197,28 @@ public:
 
 // Add gusli specific params
 #ifndef __stringify
-#define __stringify_1(x...) #x
-#define __stringify(x...) __stringify_1 (x)
+    #define __stringify_1(x...) #x
+    #define __stringify(x...) __stringify_1 (x)
 #endif
 #define UUID_LOCAL_FILE_0 11 // Just some numbers
 #define UUID_K_DEV_ZERO_1 14
 #define UUID_NVME_DISK__0 27
         params["client_name"] = agent_name;
-        params["config_file"] =
-            "# version=1, bdevs: UUID-16b, type, attach_op, direct, path, "
-            "security_cookie\n" __stringify (
-                UUID_LOCAL_FILE_0) " f W N ./store0.bin sec=0x3\n" // Local file in non direct mode
-            __stringify (
-                UUID_K_DEV_ZERO_1) " K X N /dev/zero   sec=0x71\n" // /dev/zero in non direct mode
-            __stringify (UUID_NVME_DISK__0) " K X D /dev/nvme0n1 sec=0x7\n"; // NVME in direct mode
-        params["max_num_simultaneous_requests"] = std::to_string (256);
+        #if 0
+            // You can include gusli api and build config file using its methods
+            gusli::client_config_file conf(1 /*Version*/);
+            using gsc = gusli::bdev_config_params;
+            conf.bdev_add(gsc(__stringify (UUID_LOCAL_FILE_0), gsc::bdev_type::DEV_FS_FILE,    "./store0.bin", "sec=0x03", 0, gsc::connect_how::SHARED_RW));
+            conf.bdev_add(gsc(__stringify (UUID_K_DEV_ZERO_1), gsc::bdev_type::DEV_BLK_KERNEL, "/dev/zero",    "sec=0x71", 0, gsc::connect_how::EXCLUSIVE_RW));
+            conf.bdev_add(gsc(__stringify (UUID_NVME_DISK__0), gsc::bdev_type::DEV_BLK_KERNEL, "/dev/nvme0n1", "sec=0x07", 1, gsc::connect_how::EXCLUSIVE_RW));
+            params["config_file"] = conf.get();
+        #else
+            // Unsafe method: Just generate the config string
+            params["config_file"] = "# Config file\nversion=1\n"
+                __stringify (UUID_LOCAL_FILE_0) " F W N ./store0.bin sec=0x3\n"
+                __stringify (UUID_K_DEV_ZERO_1) " K X N /dev/zero    sec=0x71\n";
+        #endif
+        params["max_num_simultaneous_requests"] = std::to_string (num_transfers);
         return params;
     }
 
@@ -248,14 +255,15 @@ public:
         }
     }
 
-#define QUIT_ON_ERR(msg, status)                                                             \
-    do {                                                                                        \
-        if (status < NIXL_SUCCESS) {                                                         \
-            err_log << "Error: " << msg << nixlEnumStrings::statusStr (status) << std::endl; \
-            if (treq) agent.releaseXferReq (treq);                                           \
-            return -__LINE__;                                                                \
-        }                                                                                    \
-    }                                                                                        \
+#define QUIT_ON_ERR(msg, status)                                                    \
+    do {                                                                            \
+        if (status < NIXL_SUCCESS) {                                                \
+            err_log << "Error: " << msg << nixlEnumStrings::statusStr (status) <<   \
+            " Line: " << __LINE__ << std::endl;                                     \
+            if (treq) agent.releaseXferReq (treq);                                  \
+            return -__LINE__;                                                       \
+        }                                                                           \
+    }                                                                               \
     while (0)
     int
     register_bufs_on_multi_bdev (
@@ -572,6 +580,7 @@ public:
             }
             print_segment_title (phase_title ("unegister-mem on multi-bdevs"));
             if (register_bufs_on_multi_bdev (agent, false) < 0) return -__LINE__;
+            print_segment_title (phase_title ("Done! Success"));
         }
         return 0;
     }
@@ -579,8 +588,8 @@ public:
 
 int
 main (int argc, char *argv[]) {
-    static constexpr const int default_num_transfers = (1 << 13);
-    static constexpr const size_t default_transfer_size = (1UL << 19); // 512KB
+    static constexpr const int default_num_transfers = 500;
+    static constexpr const size_t default_transfer_size = (1UL << 21); // 2[MB]
     int opt, num_transfers = default_num_transfers;
     size_t transfer_size = default_transfer_size;
     while ((opt = getopt (argc, argv, "n:s:h")) != -1) {

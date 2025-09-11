@@ -60,7 +60,7 @@ cd ${INSTALL_DIR}
 # POSIX test disabled until we solve io_uring and Docker compatibility
 
 ./bin/nixl_posix_test -n 128 -s 1048576
-
+./bin/nixl_gusli_test
 ./bin/ucx_backend_multi
 ./bin/serdes_test
 ./bin/gtest
